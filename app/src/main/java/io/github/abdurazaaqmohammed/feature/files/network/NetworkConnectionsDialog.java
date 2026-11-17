@@ -36,7 +36,7 @@ import io.github.codehasan.colorpicker.extensions.Extensions;
 
 /** A single connection editor. Switching protocol never loses the other tab's input. */
 final class NetworkConnectionsDialog implements AutoCloseable {
-    private static final String[] PROTOCOLS = {"ftp", "webdav", "smb"};
+    private static final String[] PROTOCOLS = {"ftp", "webdav", "smb", "sftp"};
     private final MainActivity activity;
     private final NetworkController controller;
     private final AlertDialog dialog;
@@ -60,7 +60,7 @@ final class NetworkConnectionsDialog implements AutoCloseable {
         LinearLayout container = root.findViewById(R.id.networkForms);
         for (int i = 0; i < PROTOCOLS.length; i++) {
             String p = PROTOCOLS[i];
-            tabs.addTab(tabs.newTab().setText(new int[]{R.string.network_ftp_tab, R.string.webdav_client, R.string.network_smb_tab}[i]), false);
+            tabs.addTab(tabs.newTab().setText(new int[]{R.string.network_ftp_tab, R.string.webdav_client, R.string.network_smb_tab, R.string.network_sftp_tab}[i]), false);
             Form form = new Form(p);
             forms.put(p, form);
             container.addView(form.view);
@@ -135,7 +135,7 @@ final class NetworkConnectionsDialog implements AutoCloseable {
         }
         controller.loadSaved(profiles -> {
             if (!isShowing()) return;
-            for (String p : new String[]{"webdav", "smb"}) {
+            for (String p : new String[]{"webdav", "smb", "sftp"}) {
                 Form form = forms.get(p);
                 form.profiles = new ArrayList<>();
                 for (NetworkProfile profile : profiles) if (p.equals(profile.protocol)) form.profiles.add(profile);
@@ -271,7 +271,8 @@ final class NetworkConnectionsDialog implements AutoCloseable {
             view.setVisibility(View.GONE);
             TextView help = new TextView(activity);
             help.setText(p.equals("ftp") ? R.string.network_ftp_help
-                    : p.equals("smb") ? R.string.network_smb_help : R.string.network_webdav_help);
+                    : p.equals("smb") ? R.string.network_smb_help
+                    : p.equals("sftp") ? R.string.network_sftp_help : R.string.network_webdav_help);
             view.addView(help);
             TextInputLayout savedBox = UiFields.box(activity, activity.getString(R.string.network_saved_connections));
             saved = new MaterialAutoCompleteTextView(activity);
@@ -281,7 +282,8 @@ final class NetworkConnectionsDialog implements AutoCloseable {
             addBox(savedBox);
             name = field(R.string.network_connection_name, InputType.TYPE_CLASS_TEXT);
             address = field(p.equals("ftp") ? R.string.ip_address_hint
-                    : p.equals("smb") ? R.string.network_smb_address : R.string.network_webdav_address,
+                    : p.equals("smb") ? R.string.network_smb_address
+                    : p.equals("sftp") ? R.string.network_sftp_address : R.string.network_webdav_address,
                     InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
             port = p.equals("ftp") ? field(R.string.port, InputType.TYPE_CLASS_NUMBER) : null;
             username = field(R.string.network_username, InputType.TYPE_CLASS_TEXT);
@@ -353,7 +355,7 @@ final class NetworkConnectionsDialog implements AutoCloseable {
             loading = true;
             savedName = null;
             name.setText("");
-            address.setText(protocol.equals("ftp") ? "" : protocol.equals("smb") ? "smb://" : "https://");
+            address.setText(protocol.equals("ftp") ? "" : protocol.equals("smb") ? "smb://" : protocol.equals("sftp") ? "sftp://" : "https://");
             username.setText(""); password.setText("");
             if (port != null) port.setText("21");
             if (domain != null) domain.setText("");

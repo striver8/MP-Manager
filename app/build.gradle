@@ -152,6 +152,8 @@ dependencies {
     implementation files('libs/commons-net-3.11.1.jar')
     // SMB2/3 client; no legacy SMB1 or native binaries.
     implementation 'com.hierynomus:smbj:0.14.0'
+    // SSH/SFTP client (same library and version as the Strata project).
+    implementation 'com.hierynomus:sshj:0.38.0'
     // LSPatch (JingMatrix fork) integrated-mode patcher engine (vendored, see
     // docs/XPOSED_PATCHER.md) — full flavor only — plus the vendored classes it
     // links against: the aXML manifest editor (com.wind.meditor, pxb.android)

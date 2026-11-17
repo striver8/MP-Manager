@@ -14,6 +14,8 @@ public final class NetworkProfile {
     public String username = "";
     public String password = "";
     public String domain = "";
+    /** TOFU-pinned SSH host key fingerprint (SHA-256, Base64); persisted with the profile. */
+    public String hostKey = "";
     transient String previousName;
 
     public String pinId() { return protocol + ":" + name; }
@@ -31,6 +33,14 @@ public final class NetworkProfile {
                     || uri.getQuery() != null || uri.getFragment() != null || uri.getPort() == 0
                     || uri.getPort() > 65535 || uri.getPort() < -1)
                 throw new IllegalArgumentException("Enter smb://host/share (optional :port)");
+        } else if (protocol.equals("sftp")) {
+            URI uri = sftpUri();
+            String path = uri.getPath();
+            if (!"sftp".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null || uri.getUserInfo() != null
+                    || uri.getQuery() != null || uri.getFragment() != null || uri.getPort() == 0
+                    || uri.getPort() > 65535 || uri.getPort() < -1
+                    || (path != null && !path.isEmpty() && !path.equals("/")))
+                throw new IllegalArgumentException("Enter sftp://host (optional :port, default 22)");
         } else throw new IllegalArgumentException("Unknown network protocol");
         if (name.trim().isEmpty()) name = address;
     }
@@ -38,6 +48,12 @@ public final class NetworkProfile {
     private URI smbUri() {
         try { return new URI(address); }
         catch (Exception e) { throw new IllegalArgumentException("Invalid SMB URL", e); }
+    }
+
+    /** Accepts sftp://host[:port] or a bare host[:port]; the port defaults to 22. */
+    private URI sftpUri() {
+        try { return new URI(address.contains("://") ? address : "sftp://" + address); }
+        catch (Exception e) { throw new IllegalArgumentException("Invalid SFTP address", e); }
     }
 
     public String share() {
@@ -51,6 +67,12 @@ public final class NetworkProfile {
     public RemoteClient connect() throws IOException {
         validate();
         if (protocol.equals("webdav")) return new WebDavClient(address, username, password);
+        if (protocol.equals("sftp")) {
+            URI uri = sftpUri();
+            String host = uri.getHost();
+            if (host.startsWith("[") && host.endsWith("]")) host = host.substring(1, host.length() - 1);
+            return new SftpClient(host, uri.getPort() == -1 ? 22 : uri.getPort(), username, password, hostKey);
+        }
         URI uri = smbUri();
         String host = uri.getHost();
         if (host.startsWith("[") && host.endsWith("]")) host = host.substring(1, host.length() - 1);
@@ -63,6 +85,13 @@ public final class NetworkProfile {
             HttpUrl url = HttpUrl.get(address);
             return url.newBuilder().encodedPath(url.encodedPath().endsWith("/")
                     ? url.encodedPath() : url.encodedPath() + "/").build().toString();
+        }
+        if (protocol.equals("sftp")) {
+            URI uri = sftpUri();
+            try {
+                return new URI("sftp", null, uri.getHost().toLowerCase(Locale.ROOT),
+                        uri.getPort() == -1 ? 22 : uri.getPort(), "/", null, null).toASCIIString();
+            } catch (URISyntaxException e) { throw new IllegalArgumentException("Invalid SFTP address", e); }
         }
         URI uri = smbUri();
         try {

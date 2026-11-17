@@ -126,7 +126,7 @@ public final class ToolRegistry {
             case "commandshell" -> "command_shell";
             case "setedit" -> "set_edit";
             case "jiagudumper" -> "jiagu_dumper";
-            case "ftp_client", "webdav_client", "smb_client" -> "network_client";
+            case "ftp_client", "webdav_client", "smb_client", "sftp_client" -> "network_client";
             default -> id;
         };
     }

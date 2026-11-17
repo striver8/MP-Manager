@@ -2341,4 +2341,7 @@ Layout Inspector
     <string name="jiagu_open_dumper">打开 Jiagu Dumper</string>
     <string name="jiagu_pick_app">从已安装应用中选择</string>
     <string name="jiagu_unpack_confirm">用 %1$d 个转储的 DEX 文件重建此 APK？\n\n转储：%2$s\n\n占位 Application 将替换为转储中找到的真实 Application，并移除所有注入的 hook 调用。结果需签名后才能安装。</string>
+    <string name="network_sftp_tab">SFTP</string>
+    <string name="network_sftp_address">sftp://主机:22</string>
+    <string name="network_sftp_help">通过 SSH 连接，例如 sftp://192.168.1.10 或 sftp://服务器:2222，端口默认 22。文件列表从账户主目录开始。首次连接会固定服务器主机密钥，密钥变更时将拒绝连接。</string>
 </resources>

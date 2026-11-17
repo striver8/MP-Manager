@@ -162,3 +162,8 @@
 #     references it, so R8 deleted it -> "MPManagerDocumentsProvider is
 #     missing from MP-Manager's own dex" on the Il2Cpp+docs-provider path.
 -keep class mpmanager.dump.** { *; }
+
+# 12) SSHJ (SFTP): algorithm factories, key providers and JCE SPI lookups
+#     are reflection-adjacent; keep the library whole like the other clients.
+-keep class net.schmizz.sshj.** { *; }
+-dontwarn net.schmizz.sshj.**

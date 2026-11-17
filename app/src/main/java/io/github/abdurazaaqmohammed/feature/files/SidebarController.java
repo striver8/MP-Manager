@@ -601,10 +601,12 @@ public class SidebarController {
                     FtpProfile profile = ftpProfiles.get(name);
                     if (profile != null) data.pinned.add(networkPin(pin, name, "FTP",
                             activity.getFtp().spaceForProfile(profile), activity.getFtp().hasCheckedSpace(profile)));
-                } else if (pin.startsWith(SidebarPins.WEBDAV_PREFIX) || pin.startsWith(SidebarPins.SMB_PREFIX)) {
+                } else if (pin.startsWith(SidebarPins.WEBDAV_PREFIX) || pin.startsWith(SidebarPins.SMB_PREFIX)
+                        || pin.startsWith(SidebarPins.SFTP_PREFIX)) {
                     NetworkProfile profile = networkProfiles.get(pin);
                     if (profile != null) data.pinned.add(networkPin(pin, profile.name,
-                            profile.protocol.equals("smb") ? "SMB" : "WebDAV", activity.getNetwork().spaceForProfile(profile),
+                            profile.protocol.equals("smb") ? "SMB" : profile.protocol.equals("sftp") ? "SFTP" : "WebDAV",
+                            activity.getNetwork().spaceForProfile(profile),
                             activity.getNetwork().hasCheckedSpace(profile)));
                 }
             }
@@ -653,7 +655,8 @@ public class SidebarController {
             } else if (id != null && id.startsWith(SidebarPins.FTP_PREFIX)) {
                 activity.getFtp().connectProfile(id.substring(SidebarPins.FTP_PREFIX.length()),
                         activity.lastPaneSelected == 1);
-            } else if (id != null && (id.startsWith(SidebarPins.WEBDAV_PREFIX) || id.startsWith(SidebarPins.SMB_PREFIX))) {
+            } else if (id != null && (id.startsWith(SidebarPins.WEBDAV_PREFIX) || id.startsWith(SidebarPins.SMB_PREFIX)
+                    || id.startsWith(SidebarPins.SFTP_PREFIX))) {
                 activity.getNetwork().connectProfile(id, activity.lastPaneSelected == 1);
             }
         } else {

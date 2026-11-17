@@ -19,7 +19,7 @@ import java.util.List;
  * <ul>
  *   <li>{@code saf:<treeUri>} — a granted DocumentsProvider tree;</li>
  *   <li>{@code ftp:<profileName>} — an FTP client profile by name.</li>
- *   <li>{@code webdav:<profileName>} / {@code smb:<profileName>} — encrypted network profiles.</li>
+ *   <li>{@code webdav:<profileName>} / {@code smb:<profileName>} / {@code sftp:<profileName>} — encrypted network profiles.</li>
  * </ul>
  *
  * <p>A JSON string list (not a StringSet) keeps the pin order stable.</p>
@@ -30,6 +30,7 @@ public final class SidebarPins {
     public static final String FTP_PREFIX = "ftp:";
     public static final String WEBDAV_PREFIX = "webdav:";
     public static final String SMB_PREFIX = "smb:";
+    public static final String SFTP_PREFIX = "sftp:";
     private static final String KEY = "sidebar_pinned";
 
     private SidebarPins() {

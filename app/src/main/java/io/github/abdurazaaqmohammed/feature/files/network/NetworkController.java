@@ -186,6 +186,11 @@ public final class NetworkController {
         RemoteFile[] root = {null};
         runOperation(activity.getString(R.string.connecting_to, profile.name), () -> {
             RemoteClient client = profile.connect();
+            if (client instanceof SftpClient sftp) {
+                // TOFU: pin the presented host key before the profile is persisted.
+                String fingerprint = sftp.hostKeyFingerprint();
+                if (fingerprint != null && !fingerprint.isEmpty()) profile.hostKey = fingerprint;
+            }
             try {
                 RemoteEntry entry = client.stat("");
                 if (entry == null || !entry.directory) throw new IOException("Connection root is not a folder");
