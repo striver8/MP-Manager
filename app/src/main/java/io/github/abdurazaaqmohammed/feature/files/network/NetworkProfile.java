@@ -16,6 +16,14 @@ public final class NetworkProfile {
     public String domain = "";
     /** TOFU-pinned SSH host key fingerprint (SHA-256, Base64); persisted with the profile. */
     public String hostKey = "";
+    /** SFTP only: "password" or "key". */
+    public String authMethod = "password";
+    /** SFTP key auth: the PEM/OpenSSH private key text (never written anywhere but the encrypted store). */
+    public String privateKey = "";
+    /** SFTP key auth: the passphrase protecting the private key, if any. */
+    public String keyPassphrase = "";
+
+    public boolean usesKeyAuth() { return protocol.equals("sftp") && "key".equals(authMethod); }
     transient String previousName;
 
     public String pinId() { return protocol + ":" + name; }
@@ -41,6 +49,8 @@ public final class NetworkProfile {
                     || uri.getPort() > 65535 || uri.getPort() < -1
                     || (path != null && !path.isEmpty() && !path.equals("/")))
                 throw new IllegalArgumentException("Enter sftp://host (optional :port, default 22)");
+            if (usesKeyAuth() && privateKey.trim().isEmpty())
+                throw new IllegalArgumentException("Paste or import a private key, or switch to password authentication");
         } else throw new IllegalArgumentException("Unknown network protocol");
         if (name.trim().isEmpty()) name = address;
     }
@@ -71,7 +81,10 @@ public final class NetworkProfile {
             URI uri = sftpUri();
             String host = uri.getHost();
             if (host.startsWith("[") && host.endsWith("]")) host = host.substring(1, host.length() - 1);
-            return new SftpClient(host, uri.getPort() == -1 ? 22 : uri.getPort(), username, password, hostKey);
+            SftpClient.Auth auth = usesKeyAuth()
+                    ? SftpClient.Auth.key(privateKey, keyPassphrase)
+                    : SftpClient.Auth.password(password);
+            return new SftpClient(host, uri.getPort() == -1 ? 22 : uri.getPort(), username, auth, hostKey);
         }
         URI uri = smbUri();
         String host = uri.getHost();

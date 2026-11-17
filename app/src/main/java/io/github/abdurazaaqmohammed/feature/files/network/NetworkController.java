@@ -183,11 +183,51 @@ public final class NetworkController {
     }
 
     private void connectReady(NetworkProfile profile, boolean remember, boolean pin, boolean pane1) {
+        // SFTP: never trust an unseen host key silently. Probe it and ask the user first.
+        if (profile.protocol.equals("sftp") && (profile.hostKey == null || profile.hostKey.trim().isEmpty())) {
+            verifyHostKey(profile, remember, pin, pane1);
+            return;
+        }
+        openConnection(profile, remember, pin, pane1);
+    }
+
+    private void verifyHostKey(NetworkProfile profile, boolean remember, boolean pin, boolean pane1) {
+        java.net.URI uri = java.net.URI.create(profile.canonicalAddress());
+        String rawHost = uri.getHost() == null ? "" : uri.getHost();
+        final String host = rawHost.startsWith("[") && rawHost.endsWith("]")
+                ? rawHost.substring(1, rawHost.length() - 1) : rawHost;
+        final int port = uri.getPort() == -1 ? 22 : uri.getPort();
+        final String endpoint = host + ":" + port;
+        SftpClient.HostKeyInfo[] info = {null};
+        runConnect(activity.getString(R.string.network_sftp_checking_host), R.string.network_sftp_checking_host,
+                () -> info[0] = SftpClient.probeHostKey(host, port),
+                () -> showHostKeyDialog(profile, endpoint, info[0].describe(), "", false, remember, pin, pane1),
+                this::showError);
+    }
+
+    /** Shows the presented key; accepting pins it and continues the connection. */
+    private void showHostKeyDialog(NetworkProfile profile, String endpoint, String detail, String pinned,
+                                   boolean changed, boolean remember, boolean pin, boolean pane1) {
+        if (closed || activity.isDestroyed()) return;
+        int message = changed ? R.string.network_sftp_host_key_changed : R.string.network_sftp_host_key_new;
+        activity.dialogUtil.getDialogBuilder().setTitle(R.string.network_sftp_host_key_title)
+                .setMessage(activity.getString(message, endpoint, detail, pinned))
+                .setNegativeButton(android.R.string.cancel, null)
+                .setPositiveButton(changed ? R.string.network_sftp_host_key_update : R.string.network_sftp_host_key_trust,
+                        (d, w) -> {
+                            int sha = detail.indexOf("SHA256:");
+                            if (sha >= 0) profile.hostKey = detail.substring(sha + 7);
+                            openConnection(profile, remember, pin, pane1);
+                        })
+                .show();
+    }
+
+    private void openConnection(NetworkProfile profile, boolean remember, boolean pin, boolean pane1) {
         RemoteFile[] root = {null};
-        runOperation(activity.getString(R.string.connecting_to, profile.name), () -> {
+        runConnect(activity.getString(R.string.connecting_to, profile.name), R.string.network_transfer_safety, () -> {
             RemoteClient client = profile.connect();
             if (client instanceof SftpClient sftp) {
-                // TOFU: pin the presented host key before the profile is persisted.
+                // Keep the pinned key in sync with what the server actually presented.
                 String fingerprint = sftp.hostKeyFingerprint();
                 if (fingerprint != null && !fingerprint.isEmpty()) profile.hostKey = fingerprint;
             }
@@ -205,6 +245,37 @@ public final class NetworkController {
         }, () -> {
             activity.loadFolderInPane(root[0], pane1, true);
             if (remember) activity.refreshSidebarAsync(activity.getSidebarSectionOrder());
+        }, failure -> {
+            if (failure instanceof SftpClient.HostKeyChangedException changed && !activity.isDestroyed()) {
+                // A changed key is a security event: show both fingerprints and require an explicit choice.
+                String endpoint = changed.host + ":" + changed.port;
+                showHostKeyDialog(profile, endpoint, "SHA256:" + changed.presented, changed.pinned, true, remember, pin, pane1);
+            } else showError(failure);
+        });
+    }
+
+    /** Like {@link #runOperation} but lets a failure be handled in place (e.g. a host-key prompt). */
+    private void runConnect(String title, int message, Operation operation, Runnable onSuccess, Consumer<Exception> onFailure) {
+        if (closed) return;
+        Future<?>[] task = {null};
+        AlertDialog progress = activity.dialogUtil.getDialogBuilder().setTitle(title)
+                .setMessage(message).setView(new ProgressBar(activity))
+                .setNegativeButton(android.R.string.cancel, (d, w) -> { if (task[0] != null) task[0].cancel(true); })
+                .create();
+        progress.setOnCancelListener(d -> { if (task[0] != null) task[0].cancel(true); });
+        progress.show();
+        task[0] = workers.submit(() -> {
+            Exception failure = null;
+            try { checkpoint(); operation.run(); checkpoint(); }
+            catch (Exception e) { failure = e; }
+            final Exception error = failure;
+            activity.handler.post(() -> {
+                if (closed || activity.isDestroyed()) return;
+                progress.dismiss();
+                if (task[0].isCancelled()) return;
+                if (error != null) onFailure.accept(error);
+                else if (onSuccess != null) onSuccess.run();
+            });
         });
     }
 

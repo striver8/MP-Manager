@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string-array name="sftp_auth_options">
+        <item>密码</item>
+        <item>私钥</item>
+    </string-array>
+</resources>

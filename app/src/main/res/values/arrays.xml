@@ -126,6 +126,11 @@
         <item>Slow</item>
     </string-array>
 
+    <string-array name="sftp_auth_options">
+        <item>Password</item>
+        <item>Private key</item>
+    </string-array>
+
     <string-array name="pref_capture_speed_values">
         <item>fast</item>
         <item>normal</item>

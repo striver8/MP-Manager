@@ -1,5 +1,9 @@
 package io.github.abdurazaaqmohammed.feature.files.network;
 
+import android.app.Activity;
+import android.content.Intent;
+import android.graphics.Typeface;
+import android.net.Uri;
 import android.text.Editable;
 import android.text.InputType;
 import android.text.TextWatcher;
@@ -21,6 +25,9 @@ import com.google.android.material.tabs.TabLayout;
 import com.google.android.material.textfield.MaterialAutoCompleteTextView;
 import com.google.android.material.textfield.TextInputLayout;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -186,8 +193,22 @@ final class NetworkConnectionsDialog implements AutoCloseable {
             profile.password = form.password.getText().toString();
             profile.domain = form.domain == null ? "" : form.domain.getText().toString().trim();
             profile.previousName = form.savedName;
+            if (protocol.equals("sftp")) {
+                profile.authMethod = form.usesKeyMode() ? "key" : "password";
+                if (profile.usesKeyAuth()) {
+                    profile.privateKey = form.privateKey.getText().toString().trim();
+                    profile.keyPassphrase = form.passphrase.getText().toString();
+                } else {
+                    profile.privateKey = "";
+                    profile.keyPassphrase = "";
+                }
+            }
             try { profile.validate(); }
-            catch (IllegalArgumentException e) { form.address.setError(e.getMessage()); return; }
+            catch (IllegalArgumentException e) {
+                if (profile.usesKeyAuth() && profile.privateKey.isEmpty()) form.privateKeyBox.setError(e.getMessage());
+                else form.address.setError(e.getMessage());
+                return;
+            }
             if (connect) {
                 boolean pane1 = activity.lastPaneSelected == 1;
                 dialog.dismiss();
@@ -257,6 +278,11 @@ final class NetworkConnectionsDialog implements AutoCloseable {
         final MaterialAutoCompleteTextView saved;
         final EditText name, address, username, password, port, domain;
         final MaterialAutoCompleteTextView security;
+        final MaterialAutoCompleteTextView sftpAuth;
+        final EditText privateKey, passphrase;
+        final TextInputLayout privateKeyBox, passphraseBox;
+        final MaterialButton importKey;
+        final Map<EditText, TextInputLayout> boxes = new LinkedHashMap<>();
         final MaterialCheckBox remember, pin;
         final MaterialButton delete;
         List<NetworkProfile> profiles = new ArrayList<>();
@@ -298,6 +324,35 @@ final class NetworkConnectionsDialog implements AutoCloseable {
                 addBox(box);
                 security.setSimpleItems(activity.getResources().getStringArray(R.array.ftp_security_options));
             } else security = null;
+            if (p.equals("sftp")) {
+                TextInputLayout authBox = UiFields.box(activity, activity.getString(R.string.network_sftp_auth));
+                sftpAuth = new MaterialAutoCompleteTextView(activity);
+                sftpAuth.setInputType(InputType.TYPE_NULL);
+                authBox.addView(sftpAuth, new LinearLayout.LayoutParams(-1, -2));
+                authBox.setEndIconMode(TextInputLayout.END_ICON_DROPDOWN_MENU);
+                addBox(authBox);
+                sftpAuth.setSimpleItems(activity.getResources().getStringArray(R.array.sftp_auth_options));
+                privateKeyBox = UiFields.box(activity, activity.getString(R.string.network_sftp_private_key));
+                privateKey = UiFields.field(privateKeyBox,
+                        InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE | InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD);
+                privateKey.setSingleLine(false);
+                privateKey.setMinLines(4);
+                privateKey.setMaxLines(8);
+                privateKey.setGravity(Gravity.TOP | Gravity.START);
+                privateKey.setTypeface(Typeface.MONOSPACE);
+                addBox(privateKeyBox);
+                importKey = textButton(R.string.network_sftp_import_key);
+                view.addView(importKey);
+                importKey.setOnClickListener(v -> pickKey());
+                passphraseBox = UiFields.box(activity, activity.getString(R.string.network_sftp_passphrase));
+                passphrase = UiFields.field(passphraseBox, InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+                passphrase.setSingleLine(true);
+                passphraseBox.setEndIconMode(TextInputLayout.END_ICON_PASSWORD_TOGGLE);
+                addBox(passphraseBox);
+            } else {
+                sftpAuth = null; privateKey = null; passphrase = null;
+                privateKeyBox = null; passphraseBox = null; importKey = null;
+            }
             remember = new MaterialCheckBox(activity);
             remember.setText(p.equals("ftp") ? R.string.network_remember_ftp : R.string.network_remember);
             view.addView(remember);
@@ -322,8 +377,64 @@ final class NetworkConnectionsDialog implements AutoCloseable {
                 @Override public void onTextChanged(CharSequence s, int start, int before, int count) { if (!loading) dirty = true; }
                 @Override public void afterTextChanged(Editable s) {}
             };
-            for (EditText edit : new EditText[]{name, address, port, username, password, domain, security})
+            for (EditText edit : new EditText[]{name, address, port, username, password, domain, security,
+                    privateKey, passphrase})
                 if (edit != null) edit.addTextChangedListener(edits);
+            if (sftpAuth != null) sftpAuth.addTextChangedListener(edits);
+            updateAuthVisibility();
+        }
+
+        /** Password and key credentials are mutually exclusive; only the active one is shown. */
+        void updateAuthVisibility() {
+            if (sftpAuth == null) return;
+            boolean key = usesKeyMode();
+            TextInputLayout passwordBox = boxes.get(password);
+            if (passwordBox != null) passwordBox.setVisibility(key ? View.GONE : View.VISIBLE);
+            if (privateKeyBox != null) privateKeyBox.setVisibility(key ? View.VISIBLE : View.GONE);
+            if (importKey != null) importKey.setVisibility(key ? View.VISIBLE : View.GONE);
+            if (passphraseBox != null) passphraseBox.setVisibility(key ? View.VISIBLE : View.GONE);
+        }
+
+        boolean usesKeyMode() {
+            if (sftpAuth == null) return false;
+            String[] options = activity.getResources().getStringArray(R.array.sftp_auth_options);
+            return options.length > 1 && sftpAuth.getText().toString().contentEquals(options[1]);
+        }
+
+        /** Picks a key file through SAF and reads it as text; nothing is copied or logged. */
+        private void pickKey() {
+            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*");
+            activity.launchExternalFile(intent, result -> {
+                Uri uri = result.getResultCode() == Activity.RESULT_OK && result.getData() != null
+                        ? result.getData().getData() : null;
+                if (uri == null) return;
+                new Thread(() -> {
+                    String text = null;
+                    try (InputStream in = activity.getContentResolver().openInputStream(uri);
+                         ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+                        if (in == null) throw new IOException("No stream");
+                        byte[] buffer = new byte[8192];
+                        int read;
+                        while ((read = in.read(buffer)) > 0) {
+                            out.write(buffer, 0, read);
+                            if (out.size() > 256 * 1024) throw new IOException("Too large");
+                        }
+                        text = out.toString("UTF-8");
+                    } catch (Exception ignored) { }
+                    final String pem = text;
+                    activity.runOnUiThread(() -> {
+                        if (pem == null || !pem.contains("PRIVATE KEY")) {
+                            Extensions.showMessage(activity, R.string.network_sftp_key_read_failed);
+                            return;
+                        }
+                        privateKey.setText(pem.trim());
+                        String[] options = activity.getResources().getStringArray(R.array.sftp_auth_options);
+                        if (options.length > 1) sftpAuth.setText(options[1], false);
+                        updateAuthVisibility();
+                        dirty = true;
+                    });
+                }, "sftp-key-read").start();
+            });
         }
 
         private void addBox(TextInputLayout box) {
@@ -338,6 +449,7 @@ final class NetworkConnectionsDialog implements AutoCloseable {
             edit.setSingleLine(true);
             if (hint == R.string.network_password) box.setEndIconMode(TextInputLayout.END_ICON_PASSWORD_TOGGLE);
             addBox(box);
+            boxes.put(edit, box);
             return edit;
         }
 
@@ -360,6 +472,13 @@ final class NetworkConnectionsDialog implements AutoCloseable {
             if (port != null) port.setText("21");
             if (domain != null) domain.setText("");
             if (security != null) security.setText(activity.getResources().getStringArray(R.array.ftp_security_options)[0], false);
+            if (sftpAuth != null) {
+                String[] auth = activity.getResources().getStringArray(R.array.sftp_auth_options);
+                sftpAuth.setText(auth[0], false);
+                privateKey.setText(""); passphrase.setText("");
+                privateKeyBox.setError(null);
+            }
+            updateAuthVisibility();
             pin.setChecked(false); remember.setChecked(false);
             address.setError(null);
             dirty = false; loading = false;
@@ -372,6 +491,15 @@ final class NetworkConnectionsDialog implements AutoCloseable {
             name.setText(profile.name); address.setText(profile.address);
             username.setText(profile.username); password.setText(profile.password);
             if (domain != null) domain.setText(profile.domain);
+            if (sftpAuth != null) {
+                String[] auth = activity.getResources().getStringArray(R.array.sftp_auth_options);
+                boolean key = profile.usesKeyAuth();
+                sftpAuth.setText(auth.length > 1 && key ? auth[1] : auth[0], false);
+                privateKey.setText(profile.privateKey == null ? "" : profile.privateKey);
+                passphrase.setText(profile.keyPassphrase == null ? "" : profile.keyPassphrase);
+                privateKeyBox.setError(null);
+                updateAuthVisibility();
+            }
             pin.setChecked(savedProfile && SidebarPins.isPinned(activity, profile.pinId()));
             remember.setChecked(savedProfile);
             address.setError(null);
