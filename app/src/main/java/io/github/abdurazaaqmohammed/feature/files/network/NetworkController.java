@@ -193,9 +193,10 @@ public final class NetworkController {
 
     private void verifyHostKey(NetworkProfile profile, boolean remember, boolean pin, boolean pane1) {
         java.net.URI uri = java.net.URI.create(profile.canonicalAddress());
-        String host = uri.getHost();
-        int port = uri.getPort() == -1 ? 22 : uri.getPort();
-        if (host != null && host.startsWith("[") && host.endsWith("]")) host = host.substring(1, host.length() - 1);
+        String rawHost = uri.getHost() == null ? "" : uri.getHost();
+        final String host = rawHost.startsWith("[") && rawHost.endsWith("]")
+                ? rawHost.substring(1, rawHost.length() - 1) : rawHost;
+        final int port = uri.getPort() == -1 ? 22 : uri.getPort();
         final String endpoint = host + ":" + port;
         SftpClient.HostKeyInfo[] info = {null};
         runConnect(activity.getString(R.string.network_sftp_checking_host), R.string.network_sftp_checking_host,
