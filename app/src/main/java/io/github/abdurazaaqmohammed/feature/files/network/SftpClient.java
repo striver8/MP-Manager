@@ -2,6 +2,7 @@ package io.github.abdurazaaqmohammed.feature.files.network;
 
 import net.schmizz.sshj.SSHClient;
 import net.schmizz.sshj.sftp.FileAttributes;
+import net.schmizz.sshj.sftp.FileMode;
 import net.schmizz.sshj.sftp.OpenMode;
 import net.schmizz.sshj.sftp.RemoteFile;
 import net.schmizz.sshj.sftp.RemoteResourceInfo;
@@ -106,7 +107,7 @@ public final class SftpClient implements RemoteClient {
                 if (name.equals(".") || name.equals("..")) continue;
                 FileAttributes attrs = info.getAttributes();
                 entries.add(new RemoteEntry(RemotePath.child(parent, name),
-                        attrs.isDirectory(), attrs.getSize(), attrs.getMtime() * 1000L));
+                        info.isDirectory(), attrs.getSize(), attrs.getMtime() * 1000L));
             }
             return entries;
         } catch (IOException e) { throw io("list", directory, e); }
@@ -116,7 +117,7 @@ public final class SftpClient implements RemoteClient {
         try {
             FileAttributes attrs = sftp.statExistence(remotePath(path));
             if (attrs == null) return null;
-            return new RemoteEntry(RemotePath.normalize(path), attrs.isDirectory(),
+            return new RemoteEntry(RemotePath.normalize(path), attrs.getType() == FileMode.Type.DIRECTORY,
                     attrs.getSize(), attrs.getMtime() * 1000L);
         } catch (IOException e) { throw io("stat", path, e); }
     }
@@ -170,7 +171,7 @@ public final class SftpClient implements RemoteClient {
             String name = info.getName();
             if (name.equals(".") || name.equals("..")) continue;
             String child = RemotePath.child(RemotePath.normalize(path), name);
-            if (info.getAttributes().isDirectory()) deleteRecursive(child);
+            if (info.isDirectory()) deleteRecursive(child);
             else sftp.rm(remotePath(child));
         }
         sftp.rmdir(remotePath(path));
