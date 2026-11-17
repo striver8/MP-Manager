@@ -167,3 +167,5 @@
 #     are reflection-adjacent; keep the library whole like the other clients.
 -keep class net.schmizz.sshj.** { *; }
 -dontwarn net.schmizz.sshj.**
+# sshj's eddsa dependency references JDK-internal X509 classes absent on Android.
+-dontwarn sun.security.x509.**
