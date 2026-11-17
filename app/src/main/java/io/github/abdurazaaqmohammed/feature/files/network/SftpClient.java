@@ -8,16 +8,23 @@ import net.schmizz.sshj.sftp.RemoteFile;
 import net.schmizz.sshj.sftp.RemoteResourceInfo;
 import net.schmizz.sshj.sftp.SFTPClient;
 import net.schmizz.sshj.transport.verification.HostKeyVerifier;
+import net.schmizz.sshj.userauth.keyprovider.KeyProvider;
+import net.schmizz.sshj.userauth.password.PasswordFinder;
+import net.schmizz.sshj.userauth.password.Resource;
 
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
 
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InterruptedIOException;
 import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.PublicKey;
 import java.security.Security;
+import java.security.interfaces.RSAPublicKey;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collections;
@@ -26,9 +33,11 @@ import java.util.List;
 
 /**
  * SFTP (SSH) storage. The connection root is the account's home directory.
- * Host keys use trust-on-first-use: the first connection pins the server's
- * SHA-256 fingerprint (see {@link #hostKeyFingerprint()}); later connections
- * must present the same key or fail with "Host key changed".
+ * Host keys use trust-on-first-use: {@link #probeHostKey} reports the key a server
+ * presents so the UI can ask before pinning it; later connections must present the
+ * same key or fail with {@link HostKeyChangedException}.
+ * Authentication is either a password or a private key (PEM/OpenSSH, optionally
+ * protected by a passphrase).
  */
 public final class SftpClient implements RemoteClient {
     private static final int BUFFER_SIZE = 1024 * 1024;
@@ -37,12 +46,75 @@ public final class SftpClient implements RemoteClient {
     private final SFTPClient sftp;
     private final String hostKeyFingerprint;
 
+    /** Credentials for a login: a password, or a private key plus its passphrase. */
+    public static final class Auth {
+        public final String password;
+        public final String privateKey;
+        public final String passphrase;
+
+        private Auth(String password, String privateKey, String passphrase) {
+            this.password = password == null ? "" : password;
+            this.privateKey = privateKey == null ? "" : privateKey;
+            this.passphrase = passphrase == null ? "" : passphrase;
+        }
+
+        public static Auth password(String password) { return new Auth(password, null, null); }
+
+        public static Auth key(String privateKey, String passphrase) {
+            return new Auth(null, privateKey, passphrase);
+        }
+
+        public boolean usesKey() { return !privateKey.trim().isEmpty(); }
+    }
+
+    /** What the server presented during a host-key probe, for the confirmation prompt. */
+    public static final class HostKeyInfo {
+        public final String host;
+        public final int port;
+        public final String algorithm;
+        public final int bits;
+        public final String fingerprint;
+
+        HostKeyInfo(String host, int port, String algorithm, int bits, String fingerprint) {
+            this.host = host;
+            this.port = port;
+            this.algorithm = algorithm;
+            this.bits = bits;
+            this.fingerprint = fingerprint;
+        }
+
+        /** e.g. "Ed25519 · SHA256:abc…"; used as the dialog body line. */
+        public String describe() {
+            if (algorithm == null || algorithm.isEmpty()) return "SHA256:" + fingerprint;
+            String algo = bits > 0 ? algorithm + " " + bits : algorithm;
+            return algo + " · SHA256:" + fingerprint;
+        }
+    }
+
+    /** The server's key no longer matches the pinned one; the caller may ask the user to accept it. */
+    public static final class HostKeyChangedException extends IOException {
+        public final String host;
+        public final int port;
+        public final String pinned;
+        public final String presented;
+
+        HostKeyChangedException(String host, int port, String pinned, String presented) {
+            super("Host key changed for " + host + ":" + port + " (pinned " + pinned + ", presented " + presented + ")");
+            this.host = host;
+            this.port = port;
+            this.pinned = pinned;
+            this.presented = presented;
+        }
+    }
+
     public SftpClient(String host, int port, String username, String password, String knownHostKey) throws IOException {
+        this(host, port, username, Auth.password(password), knownHostKey);
+    }
+
+    public SftpClient(String host, int port, String username, Auth auth, String knownHostKey) throws IOException {
         if (username == null || username.trim().isEmpty())
             throw new IllegalArgumentException("SFTP requires a username");
-        // sshj needs BouncyCastle for modern key exchange; MainActivity registers it too.
-        if (Security.getProvider(BouncyCastleProvider.PROVIDER_NAME) == null)
-            Security.addProvider(new BouncyCastleProvider());
+        ensureBouncyCastle();
         ssh = new SSHClient();
         ssh.setConnectTimeout(15_000);
         ssh.setTimeout(60_000);
@@ -65,17 +137,81 @@ public final class SftpClient implements RemoteClient {
             ssh.connect(host, port);
         } catch (IOException e) {
             closeQuietly();
-            if (rejected[0]) throw new IOException("Host key changed for " + host + ":" + port
-                    + " (pinned " + known + ", presented " + presented[0] + ")", e);
+            if (rejected[0]) throw new HostKeyChangedException(host, port, known, presented[0]);
             throw new IOException("SFTP connect " + host + ":" + port + ": " + e.getMessage(), e);
         }
         hostKeyFingerprint = presented[0];
         try {
-            ssh.authPassword(username, password == null ? "" : password);
+            if (auth.usesKey()) ssh.authPublickey(username, keyProvider(auth.privateKey, auth.passphrase));
+            else ssh.authPassword(username, auth.password);
             sftp = ssh.newSFTPClient();
         } catch (IOException e) {
             closeQuietly();
             throw new IOException("SFTP login " + username + "@" + host + ":" + port + ": " + e.getMessage(), e);
+        }
+    }
+
+    /** Connects only far enough to read the host key; the user confirms it before a real login. */
+    public static HostKeyInfo probeHostKey(String host, int port) throws IOException {
+        ensureBouncyCastle();
+        SSHClient probe = new SSHClient();
+        probe.setConnectTimeout(15_000);
+        PublicKey[] presented = {null};
+        probe.addHostKeyVerifier(new HostKeyVerifier() {
+            @Override public boolean verify(String hostname, int hostPort, PublicKey key) {
+                presented[0] = key;
+                return true;
+            }
+            @Override public List<String> findExistingAlgorithms(String hostname, int hostPort) {
+                return Collections.emptyList();
+            }
+        });
+        try {
+            probe.connect(host, port);
+            if (presented[0] == null) throw new IOException("Server presented no host key");
+            int bits = presented[0] instanceof RSAPublicKey rsa ? rsa.getModulus().bitLength() : 0;
+            return new HostKeyInfo(host, port, algorithmName(presented[0]), bits, fingerprint(presented[0]));
+        } catch (IOException e) {
+            throw new IOException("SFTP host key " + host + ":" + port + ": " + e.getMessage(), e);
+        } finally {
+            try { if (probe.isConnected()) probe.disconnect(); } catch (Exception ignored) {}
+        }
+    }
+
+    private static void ensureBouncyCastle() {
+        // sshj needs BouncyCastle for modern key exchange; MainActivity registers it too.
+        if (Security.getProvider(BouncyCastleProvider.PROVIDER_NAME) == null)
+            Security.addProvider(new BouncyCastleProvider());
+    }
+
+    private static String algorithmName(PublicKey key) {
+        String algorithm = key.getAlgorithm();
+        if ("EdDSA".equalsIgnoreCase(algorithm) || "Ed25519".equalsIgnoreCase(algorithm)) return "Ed25519";
+        if ("EC".equalsIgnoreCase(algorithm) || "ECDSA".equalsIgnoreCase(algorithm)) return "ECDSA";
+        return algorithm;
+    }
+
+    /** Writes the key to a private cache file long enough for sshj to parse it, then deletes it. */
+    private KeyProvider keyProvider(String pem, String passphrase) throws IOException {
+        File file = File.createTempFile("sftp_key", ".pem");
+        file.deleteOnExit();
+        try {
+            try (FileOutputStream out = new FileOutputStream(file)) {
+                out.write(pem.trim().getBytes(StandardCharsets.UTF_8));
+                out.write('\n');
+            }
+            PasswordFinder finder = passphrase.isEmpty() ? null : new PasswordFinder() {
+                @Override public char[] reqPassword(Resource<?> resource) { return passphrase.toCharArray(); }
+                @Override public boolean shouldRetry(Resource<?> resource) { return false; }
+            };
+            return finder == null
+                    ? ssh.loadKeys(file.getAbsolutePath())
+                    : ssh.loadKeys(file.getAbsolutePath(), file.getAbsolutePath(), finder);
+        } catch (IllegalArgumentException e) {
+            throw new IOException("Unsupported private key: " + e.getMessage(), e);
+        } finally {
+            //noinspection ResultOfMethodCallIgnored
+            file.delete();
         }
     }
 

@@ -2343,5 +2343,16 @@ Layout Inspector
     <string name="jiagu_unpack_confirm">用 %1$d 个转储的 DEX 文件重建此 APK？\n\n转储：%2$s\n\n占位 Application 将替换为转储中找到的真实 Application，并移除所有注入的 hook 调用。结果需签名后才能安装。</string>
     <string name="network_sftp_tab">SFTP</string>
     <string name="network_sftp_address">sftp://主机:22</string>
+    <string name="network_sftp_auth">认证方式</string>
+    <string name="network_sftp_private_key">私钥（PEM 或 OpenSSH）</string>
+    <string name="network_sftp_import_key">导入私钥文件</string>
+    <string name="network_sftp_passphrase">私钥口令（可选）</string>
+    <string name="network_sftp_key_read_failed">该文件不是可读取的私钥</string>
+    <string name="network_sftp_checking_host">正在读取服务器主机密钥…</string>
+    <string name="network_sftp_host_key_title">服务器主机密钥</string>
+    <string name="network_sftp_host_key_new">首次连接 %1$s。\n\n%2$s\n\n信任这台服务器并继续？</string>
+    <string name="network_sftp_host_key_changed">%1$s 的主机密钥与已固定的不一致。\n\n已固定：%3$s\n\n服务器提供：%2$s\n\n只有在你亲自更换了服务器时才继续。</string>
+    <string name="network_sftp_host_key_trust">信任并连接</string>
+    <string name="network_sftp_host_key_update">更新密钥并连接</string>
     <string name="network_sftp_help">通过 SSH 连接，例如 sftp://192.168.1.10 或 sftp://服务器:2222，端口默认 22。文件列表从账户主目录开始。首次连接会固定服务器主机密钥，密钥变更时将拒绝连接。</string>
 </resources>
