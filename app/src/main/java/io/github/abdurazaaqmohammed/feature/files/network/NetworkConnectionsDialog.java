@@ -199,6 +199,15 @@ final class NetworkConnectionsDialog implements AutoCloseable {
             if (loaded != null && loaded.protocol.equals(profile.protocol) && loaded.address != null
                     && loaded.address.trim().equals(profile.address) && loaded.hostKey != null) {
                 profile.hostKey = loaded.hostKey;
+            } else if (profile.hostKey.isEmpty()) {
+                // Retyping a saved connection by hand must not drop its pinned key either.
+                for (NetworkProfile stored : form.profiles) {
+                    if (stored.name.equals(profile.name) && stored.address != null
+                            && stored.address.trim().equals(profile.address) && stored.hostKey != null) {
+                        profile.hostKey = stored.hostKey;
+                        break;
+                    }
+                }
             }
             if (protocol.equals("sftp")) {
                 profile.authMethod = form.usesKeyMode() ? "key" : "password";
