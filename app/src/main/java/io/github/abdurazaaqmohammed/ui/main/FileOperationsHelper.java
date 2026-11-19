@@ -718,20 +718,20 @@ public class FileOperationsHelper {
                 }
                 final File moveSource = f;
                 final File moveTarget = dest;
-                final int moveFiles = itemTotal;
-                parallelMoves.add(() -> {
-                    if (moveSource.isDirectory()) {
-                        FileUtils.copyFolder(moveSource, moveTarget, listener);
-                    } else {
+                if (moveSource.isDirectory()) {
+                    planMoveTree(moveSource, moveTarget, parallelMoves, movedItems, totalFiles, listener);
+                } else {
+                    parallelMoves.add(() -> {
                         FileUtils.copyFile(moveSource, moveTarget, listener);
-                    }
-                    PrivilegeManager.Files.preserveTime(context, moveSource.getAbsolutePath(), moveTarget.getAbsolutePath());
-                    if (copySize(moveSource) != copySize(moveTarget)) {
-                        throw new IOException("Move failed, copy mismatch: " + moveSource.getName());
-                    }
-                    deleteRecursive(moveSource);
-                    advanceActiveProgress(movedItems.addAndGet(moveFiles), totalFiles);
-                });
+                        PrivilegeManager.Files.preserveTime(context, moveSource.getAbsolutePath(), moveTarget.getAbsolutePath());
+                        if (copySize(moveSource) != copySize(moveTarget)) {
+                            throw new IOException("Move failed, copy mismatch: " + moveSource.getName());
+                        }
+                        //noinspection ResultOfMethodCallIgnored
+                        moveSource.delete();
+                        advanceActiveProgress(movedItems.addAndGet(1), totalFiles);
+                    });
+                }
             } else if (item instanceof ZipEntryInfo z) {
                 if (dest != null) {
                     extractZipEntry(z, destinationFolder, dest.getName());
@@ -741,6 +741,13 @@ public class FileOperationsHelper {
         }
         ParallelTransfer.run(UiPrefs.getTransferThreads(context), parallelMoves, transferControl());
         done = movedItems.get();
+        // The files already left, so remove the empty folders that held them. Only
+        // empty directories are dropped: a task that failed must keep its source.
+        for (Object item : items) {
+            if (item instanceof File f && f.isDirectory() && !batchDone.contains(item)) {
+                deleteEmptyTree(f);
+            }
+        }
         completeActiveProgress(totalFiles, totalBytes);
         List<String> affectedNames = new ArrayList<>();
         for (File destFile : plan.values()) {
@@ -772,6 +779,80 @@ public class FileOperationsHelper {
      * really replaces instead of failing the rename or appending into the old
      * folder.
      */
+/**
+     * Turns one copy root into per-file tasks. The directory tree is created on
+     * the calling thread; every file then becomes its own task so the transfer
+     * pool parallelses inside a folder as well, the way MT Manager copies.
+     */
+    private void planCopyTree(File source, File target, List<ParallelTransfer.Task> tasks,
+                              AtomicInteger counter, int totalFiles,
+                              FileUtils.TransferListener listener) {
+        if (source.isDirectory()) {
+            if (!target.exists()) {
+                //noinspection ResultOfMethodCallIgnored
+                target.mkdirs();
+            }
+            String[] children = source.list();
+            if (children == null) return;
+            for (String child : children) {
+                planCopyTree(new File(source, child), new File(target, child), tasks, counter, totalFiles, listener);
+            }
+            return;
+        }
+        final File from = source;
+        final File to = target;
+        tasks.add(() -> {
+            FileUtils.copyFile(from, to, listener);
+            PrivilegeManager.Files.preserveTime(context, from.getAbsolutePath(), to.getAbsolutePath());
+            advanceActiveProgress(counter.addAndGet(1), totalFiles);
+        });
+    }
+
+    /** The move counterpart of {@link #planCopyTree}: copy, verify, then delete one file. */
+    private void planMoveTree(File source, File target, List<ParallelTransfer.Task> tasks,
+                              AtomicInteger counter, int totalFiles,
+                              FileUtils.TransferListener listener) {
+        if (source.isDirectory()) {
+            if (!target.exists()) {
+                //noinspection ResultOfMethodCallIgnored
+                target.mkdirs();
+            }
+            String[] children = source.list();
+            if (children == null) return;
+            for (String child : children) {
+                planMoveTree(new File(source, child), new File(target, child), tasks, counter, totalFiles, listener);
+            }
+            return;
+        }
+        final File from = source;
+        final File to = target;
+        tasks.add(() -> {
+            FileUtils.copyFile(from, to, listener);
+            PrivilegeManager.Files.preserveTime(context, from.getAbsolutePath(), to.getAbsolutePath());
+            if (copySize(from) != copySize(to)) {
+                throw new IOException("Move failed, copy mismatch: " + from.getName());
+            }
+            //noinspection ResultOfMethodCallIgnored
+            from.delete();
+            advanceActiveProgress(counter.addAndGet(1), totalFiles);
+        });
+    }
+
+    /** Removes a folder tree only as far as it is empty, so failed items survive. */
+    private static void deleteEmptyTree(File dir) {
+        File[] children = dir.listFiles();
+        if (children != null) {
+            for (File child : children) {
+                if (child.isDirectory()) deleteEmptyTree(child);
+            }
+        }
+        children = dir.listFiles();
+        if (children != null && children.length == 0) {
+            //noinspection ResultOfMethodCallIgnored
+            dir.delete();
+        }
+    }
+
     private void clearReplacedDestination(File dest, boolean useElevated) {
         if (dest == null) return;
         try {
@@ -1224,16 +1305,17 @@ public class FileOperationsHelper {
             }
             final File source = f;
             final File target = dest;
-            final int itemFiles = itemTotal;
-            parallelCopies.add(() -> {
-                if (source.isDirectory()) {
-                    FileUtils.copyFolder(source, target, listener);
-                } else {
+            if (source.isDirectory()) {
+                // MT Manager spreads one folder copy across its threads too, so the
+                // tree is walked here and every single file becomes its own task.
+                planCopyTree(source, target, parallelCopies, copiedItems, totalFiles, listener);
+            } else {
+                parallelCopies.add(() -> {
                     FileUtils.copyFile(source, target, listener);
-                }
-                PrivilegeManager.Files.preserveTime(context, source.getAbsolutePath(), target.getAbsolutePath());
-                advanceActiveProgress(copiedItems.addAndGet(itemFiles), totalFiles);
-            });
+                    PrivilegeManager.Files.preserveTime(context, source.getAbsolutePath(), target.getAbsolutePath());
+                    advanceActiveProgress(copiedItems.addAndGet(1), totalFiles);
+                });
+            }
         }
         ParallelTransfer.run(UiPrefs.getTransferThreads(context), parallelCopies, transferControl());
         done = copiedItems.get();
