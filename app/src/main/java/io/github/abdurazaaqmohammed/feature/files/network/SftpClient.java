@@ -9,8 +9,6 @@ import net.schmizz.sshj.sftp.RemoteResourceInfo;
 import net.schmizz.sshj.sftp.SFTPClient;
 import net.schmizz.sshj.transport.verification.HostKeyVerifier;
 import net.schmizz.sshj.userauth.keyprovider.KeyProvider;
-import net.schmizz.sshj.userauth.password.PasswordFinder;
-import net.schmizz.sshj.userauth.password.Resource;
 
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
 
@@ -45,6 +43,8 @@ public final class SftpClient implements RemoteClient {
     private final SSHClient ssh;
     private final SFTPClient sftp;
     private final String hostKeyFingerprint;
+    /** Backing file for a PEM key; sshj re-reads it while signing, so it lives until the client closes. */
+    private File keyTempFile;
 
     /** Credentials for a login: a password, or a private key plus its passphrase. */
     public static final class Auth {
@@ -133,6 +133,18 @@ public final class SftpClient implements RemoteClient {
                 return Collections.emptyList();
             }
         });
+        KeyProvider keyAuth = null;
+        if (auth.usesKey()) {
+            try {
+                keyAuth = keyProvider(auth.privateKey, auth.passphrase);
+                // Decrypt now, so a wrong passphrase is reported as a key problem instead of a vague auth failure.
+                keyAuth.getPrivate();
+            } catch (Exception e) {
+                closeQuietly();
+                throw new IOException("Cannot read the private key: " + e.getMessage()
+                        + (auth.passphrase.isEmpty() ? "" : " (check the key passphrase)"), e);
+            }
+        }
         try {
             ssh.connect(host, port);
         } catch (IOException e) {
@@ -142,7 +154,7 @@ public final class SftpClient implements RemoteClient {
         }
         hostKeyFingerprint = presented[0];
         try {
-            if (auth.usesKey()) ssh.authPublickey(username, keyProvider(auth.privateKey, auth.passphrase));
+            if (keyAuth != null) ssh.authPublickey(username, keyAuth);
             else ssh.authPassword(username, auth.password);
             sftp = ssh.newSFTPClient();
         } catch (IOException e) {
@@ -191,27 +203,23 @@ public final class SftpClient implements RemoteClient {
         return algorithm;
     }
 
-    /** Writes the key to a private cache file long enough for sshj to parse it, then deletes it. */
+    /**
+     * Writes the key to a private cache file so sshj can parse it. sshj reads the file lazily while
+     * signing, so the file must outlive this call and is only removed when the client closes.
+     */
     private KeyProvider keyProvider(String pem, String passphrase) throws IOException {
         File file = File.createTempFile("sftp_key", ".pem");
-        file.deleteOnExit();
+        keyTempFile = file;
         try {
             try (FileOutputStream out = new FileOutputStream(file)) {
                 out.write(pem.trim().getBytes(StandardCharsets.UTF_8));
                 out.write('\n');
             }
-            PasswordFinder finder = passphrase.isEmpty() ? null : new PasswordFinder() {
-                @Override public char[] reqPassword(Resource<?> resource) { return passphrase.toCharArray(); }
-                @Override public boolean shouldRetry(Resource<?> resource) { return false; }
-            };
-            return finder == null
+            return passphrase.isEmpty()
                     ? ssh.loadKeys(file.getAbsolutePath())
-                    : ssh.loadKeys(file.getAbsolutePath(), file.getAbsolutePath(), finder);
+                    : ssh.loadKeys(file.getAbsolutePath(), passphrase.toCharArray());
         } catch (IllegalArgumentException e) {
             throw new IOException("Unsupported private key: " + e.getMessage(), e);
-        } finally {
-            //noinspection ResultOfMethodCallIgnored
-            file.delete();
         }
     }
 
@@ -323,6 +331,11 @@ public final class SftpClient implements RemoteClient {
 
     private void closeQuietly() {
         try { if (ssh.isConnected()) ssh.disconnect(); } catch (Exception ignored) {}
+        if (keyTempFile != null) {
+            //noinspection ResultOfMethodCallIgnored
+            keyTempFile.delete();
+            keyTempFile = null;
+        }
     }
 
     private static void closeFile(RemoteFile file) {
