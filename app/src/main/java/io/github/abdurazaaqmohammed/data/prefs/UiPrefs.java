@@ -8,6 +8,8 @@ import android.view.animation.DecelerateInterpolator;
 
 import androidx.preference.PreferenceManager;
 
+import io.github.abdurazaaqmohammed.util.io.ParallelTransfer;
+
 import com.reandroid.apk.framework.InternalFrameworks;
 
 import java.io.File;
@@ -82,6 +84,27 @@ public final class UiPrefs {
             return Math.max(1, Math.min(8, v));
         } catch (Exception e) {
             return 2;
+        }
+    }
+
+    /** How many files a batch transfer may move at the same time. */
+    public static final String TRANSFER_THREADS_KEY = "transfer_threads";
+
+    public static int getTransferThreads(Context context) {
+        try {
+            int v = PreferenceManager.getDefaultSharedPreferences(context)
+                    .getInt(TRANSFER_THREADS_KEY, ParallelTransfer.DEFAULT_THREADS);
+            return ParallelTransfer.clamp(v);
+        } catch (Exception e) {
+            return ParallelTransfer.DEFAULT_THREADS;
+        }
+    }
+
+    public static void setTransferThreads(Context context, int threads) {
+        try {
+            PreferenceManager.getDefaultSharedPreferences(context).edit()
+                    .putInt(TRANSFER_THREADS_KEY, ParallelTransfer.clamp(threads)).apply();
+        } catch (Exception ignored) {
         }
     }
 

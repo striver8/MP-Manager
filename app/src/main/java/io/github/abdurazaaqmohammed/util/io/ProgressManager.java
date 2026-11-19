@@ -458,13 +458,16 @@ public class ProgressManager {
         return this;
     }
 
-    /** Adds to the byte counter. Safe to call thousands of times per second. */
-    public ProgressManager addBytes(long delta) {
+    /**
+     * Adds to the byte counter. Safe to call thousands of times per second, and
+     * from several transfer workers at once.
+     */
+    public synchronized ProgressManager addBytes(long delta) {
         if (delta > 0) bytesDone += delta;
         return this;
     }
 
-    public ProgressManager setProgress(int progress, int max) {
+    public synchronized ProgressManager setProgress(int progress, int max) {
         markStarted();
         this.progressVal = progress;
         this.maxVal = max;

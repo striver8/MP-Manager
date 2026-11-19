@@ -1013,6 +1013,23 @@ public class SettingsController {
         retentionTv.setOnItemClickListener((p, v, pos, id) ->
                 RecycleBin.setRetentionDays(activity, retentionChoices[pos]));
 
+        // How many files a batch transfer may move at the same time. The same
+        // value drives local copies and the extra sessions a remote transfer
+        // opens, which is what MT Manager calls multi-threaded copy.
+        AutoCompleteTextView threadsTv = root.findViewById(R.id.transferThreadsTv);
+        final int[] threadChoices = {1, 2, 3, 4, 6, 8};
+        List<String> threadLabels = new ArrayList<>();
+        for (int count : threadChoices) threadLabels.add(String.valueOf(count));
+        threadsTv.setAdapter(dropdownAdapter(threadLabels));
+        int savedThreads = UiPrefs.getTransferThreads(activity);
+        int threadIdx = 3;
+        for (int i = 0; i < threadChoices.length; i++) {
+            if (threadChoices[i] == savedThreads) threadIdx = i;
+        }
+        threadsTv.setText(threadLabels.get(threadIdx), false);
+        threadsTv.setOnItemClickListener((p, v, pos, id) ->
+                UiPrefs.setTransferThreads(activity, threadChoices[pos]));
+
         TextView recycleBinPathTv = root.findViewById(R.id.recycleBinPathTv);
         recycleBinPathTv.setText(RecycleBin.binDir(activity).getPath());
         root.findViewById(R.id.pickRecycleBinBtn).setOnClickListener(v ->

@@ -2355,4 +2355,6 @@ Layout Inspector
     <string name="network_sftp_host_key_trust">信任并连接</string>
     <string name="network_sftp_host_key_update">更新密钥并连接</string>
     <string name="network_sftp_help">通过 SSH 连接，例如 sftp://192.168.1.10 或 sftp://服务器:2222，端口默认 22。文件列表从账户主目录开始。首次连接会固定服务器主机密钥，密钥变更时将拒绝连接。</string>
+    <string name="transfer_threads">传输线程数</string>
+    <string name="transfer_threads_summary">一次复制或上传同时处理的文件数。</string>
 </resources>
