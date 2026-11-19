@@ -24,6 +24,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InterruptedIOException;
 import java.nio.file.Files;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
@@ -34,13 +35,16 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 import io.github.abdurazaaqmohammed.ui.main.MainActivity;
 import io.github.abdurazaaqmohammed.MPManager.R;
 import io.github.abdurazaaqmohammed.ui.main.MainFilesArrayAdapter;
 import io.github.abdurazaaqmohammed.data.prefs.SidebarPins;
+import io.github.abdurazaaqmohammed.data.prefs.UiPrefs;
 import io.github.abdurazaaqmohammed.util.io.FileUtils;
+import io.github.abdurazaaqmohammed.util.io.ParallelTransfer;
 import io.github.abdurazaaqmohammed.privilege.impl.RootStaging;
 import io.github.abdurazaaqmohammed.util.io.SafFile;
 import io.github.abdurazaaqmohammed.util.io.SafFs;
@@ -53,6 +57,11 @@ public final class NetworkController {
     private volatile boolean closed;
     private Runnable pendingConnection;
     private NetworkConnectionsDialog connections;
+    /**
+     * The settings behind every live connection, keyed by connection id, so a
+     * parallel transfer can open helper sessions with the same credentials.
+     */
+    private final ConcurrentHashMap<String, NetworkProfile> profileByConnection = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, RemoteSpace.Report> spaceReports = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Long> spaceCheckTimes = new ConcurrentHashMap<>();
     private final ActivityResultLauncher<String> localPermission;
@@ -240,7 +249,10 @@ public final class NetworkController {
                     if (closed) throw new IOException("Connection closed");
                     clients.add(client);
                 }
-                root[0] = RemoteFile.root(new RemoteFile.Connection(client, profile.canonicalAddress(), profile.pinId(), profile.storageIdentity()));
+                RemoteFile.Connection connection = new RemoteFile.Connection(client,
+                        profile.canonicalAddress(), profile.pinId(), profile.storageIdentity());
+                profileByConnection.put(connection.id, profile);
+                root[0] = RemoteFile.root(connection);
             } catch (Exception e) { client.close(); throw e; }
         }, () -> {
             activity.loadFolderInPane(root[0], pane1, true);
@@ -360,13 +372,96 @@ public final class NetworkController {
                 if (listener != null) listener.checkpoint();
                 if (!(item instanceof File) || item instanceof FTPFileWrapper)
                     throw new IOException("Extract archive entries to a local folder before uploading");
-                File source = (File) item;
-                uploadSource(source, destination.connection.client, destination.entry.path, listener);
-                checkpoint();
-                if (listener != null) listener.checkpoint();
-                if (move) deleteSource(source);
+            }
+            // One session is one socket: a batch is only faster if several
+            // connections push at the same time. The extra sessions are opened
+            // here and closed when the batch ends; if the server refuses them we
+            // simply run with fewer workers, down to the old serial behaviour.
+            NetworkProfile profile = profileByConnection.get(destination.connection.id);
+            int threads = ParallelTransfer.clamp(UiPrefs.getTransferThreads(activity));
+            int helpers = profile == null ? 0
+                    : Math.min(threads, Math.max(1, items.size())) - 1;
+            List<RemoteClient> extra = helpers > 0
+                    ? openTransferHelpers(profile, helpers) : Collections.emptyList();
+            final List<RemoteClient> pool = new ArrayList<>(1 + extra.size());
+            pool.add(destination.connection.client);
+            pool.addAll(extra);
+            final AtomicInteger next = new AtomicInteger();
+            List<ParallelTransfer.Task> tasks = new ArrayList<>(items.size());
+            for (Object item : items) {
+                final File source = (File) item;
+                tasks.add(() -> {
+                    checkpoint();
+                    if (listener != null) listener.checkpoint();
+                    RemoteClient worker = pool.get(Math.floorMod(next.getAndIncrement(), pool.size()));
+                    uploadSource(source, worker, destination.entry.path, listener);
+                    checkpoint();
+                    if (listener != null) listener.checkpoint();
+                    if (move) deleteSource(source);
+                });
+            }
+            try {
+                ParallelTransfer.run(threads, tasks, null);
+            } finally {
+                closeHelpers(extra);
             }
         } finally { activity.handler.post(activity::refreshAllPanes); }
+    }
+
+    /**
+     * Opens up to {@code wanted} additional sessions for one transfer.
+     *
+     * <p>A server that limits concurrent logins refuses the extra ones; a
+     * failure here is not an error, it just means the batch runs on fewer
+     * connections, which is exactly what it did before.
+     */
+    private List<RemoteClient> openTransferHelpers(NetworkProfile profile, int wanted) {
+        List<RemoteClient> opened = new ArrayList<>(wanted);
+        for (int i = 0; i < wanted; i++) {
+            try {
+                RemoteClient client = profile.connect();
+                synchronized (clients) {
+                    if (closed) {
+                        client.close();
+                        break;
+                    }
+                    clients.add(client);
+                }
+                opened.add(client);
+            } catch (Exception e) {
+                break;
+            }
+        }
+        return opened;
+    }
+
+    /**
+     * The connection itself plus as many helper sessions as the transfer
+     * settings allow, for one download.
+     */
+    private List<RemoteClient> transferPool(RemoteFile source) {
+        NetworkProfile profile = profileByConnection.get(source.connection.id);
+        int threads = ParallelTransfer.clamp(UiPrefs.getTransferThreads(activity));
+        List<RemoteClient> extra = profile == null || threads < 2
+                ? Collections.emptyList()
+                : openTransferHelpers(profile, threads - 1);
+        List<RemoteClient> pool = new ArrayList<>(1 + extra.size());
+        pool.add(source.connection.client);
+        pool.addAll(extra);
+        return pool;
+    }
+
+    private void closeHelpers(List<RemoteClient> helpers) {
+        if (helpers == null || helpers.isEmpty()) return;
+        synchronized (clients) {
+            clients.removeAll(helpers);
+        }
+        for (RemoteClient client : helpers) {
+            try {
+                client.close();
+            } catch (Exception ignored) {
+            }
+        }
     }
 
     private void uploadSource(File source, RemoteClient destination, String parent,
@@ -427,7 +522,12 @@ public final class NetworkController {
                 File staging = makeStagingFolder();
                 try {
                     File local = new File(staging, source.getName());
-                    RemoteTransfers.download(source.connection.client, source.entry, local);
+                    List<RemoteClient> pool = transferPool(source);
+                    try {
+                        RemoteTransfers.downloadTree(pool, source.entry, local, null);
+                    } finally {
+                        closeHelpers(pool.subList(1, pool.size()));
+                    }
                     checkpoint();
                     if (destination instanceof RemoteFile remote) {
                         RemoteTransfers.upload(remote.connection.client, remote.entry.path, local);
@@ -440,7 +540,13 @@ public final class NetworkController {
                     }
                 } finally { FileUtils.deleteTree(staging, null); }
             } else {
-                RemoteTransfers.download(source.connection.client, source.entry, new File(destination, source.getName()));
+                File target = new File(destination, source.getName());
+                List<RemoteClient> pool = transferPool(source);
+                try {
+                    RemoteTransfers.downloadTree(pool, source.entry, target, null);
+                } finally {
+                    closeHelpers(pool.subList(1, pool.size()));
+                }
             }
             checkpoint();
             if (move) source.connection.client.delete(source.entry.path, source.isDirectory());
@@ -480,6 +586,7 @@ public final class NetworkController {
     public void close() {
         closed = true;
         pendingConnection = null;
+        profileByConnection.clear();
         if (connections != null) connections.close();
         workers.shutdownNow();
         // Socket/logoff teardown must not block Android's UI thread.

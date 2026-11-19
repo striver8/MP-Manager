@@ -56,6 +56,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import io.github.abdurazaaqmohammed.ui.main.MainActivity;
 import io.github.abdurazaaqmohammed.MPManager.R;
@@ -69,6 +70,7 @@ import io.github.abdurazaaqmohammed.util.archive.ArchiveUtil;
 import io.github.abdurazaaqmohammed.util.archive.ArchiveBrowseUtil;
 import io.github.abdurazaaqmohammed.util.io.DestSizePoller;
 import io.github.abdurazaaqmohammed.util.io.FileUtils;
+import io.github.abdurazaaqmohammed.util.io.ParallelTransfer;
 import io.github.abdurazaaqmohammed.util.io.ProgressManager;
 import io.github.abdurazaaqmohammed.privilege.impl.RootManager;
 import io.github.abdurazaaqmohammed.privilege.impl.NativeCopyException;
@@ -631,6 +633,11 @@ public class FileOperationsHelper {
             }
         }
 
+        // A cross-filesystem move falls back to copy + delete; those item pairs
+        // are independent, so they are queued here and executed by the transfer
+        // pool. Renames and shell moves above stay serial: they are instant.
+        final AtomicInteger movedItems = new AtomicInteger(done);
+        List<ParallelTransfer.Task> parallelMoves = new ArrayList<>();
         for (Map.Entry<Object, File> planned : plan.entrySet()) {
             checkpointTransfer();
             Object item = planned.getKey();
@@ -653,7 +660,7 @@ public class FileOperationsHelper {
                         ? PrivilegeManager.Files.exists(context, dest.getAbsolutePath())
                         : dest.exists();
                 if (srcGone && destThere) {
-                    done += itemTotal;
+                    done = movedItems.addAndGet(itemTotal);
                     advanceActiveProgress(done, totalFiles);
                     if (listener != null) listener.onBytes(itemBytes);
                     continue;
@@ -680,7 +687,7 @@ public class FileOperationsHelper {
                         listener.onFile(f, dest);
                         listener.onBytes(itemBytes);
                     }
-                    done += itemTotal;
+                    done = movedItems.addAndGet(itemTotal);
                     advanceActiveProgress(done, totalFiles);
                     continue;
                 }
@@ -692,7 +699,7 @@ public class FileOperationsHelper {
                         listener.onFile(f, dest);
                         listener.onBytes(itemBytes);
                     }
-                    done += itemTotal;
+                    done = movedItems.addAndGet(itemTotal);
                     advanceActiveProgress(done, totalFiles);
                     continue;
                 }
@@ -708,26 +715,32 @@ public class FileOperationsHelper {
                         //noinspection ResultOfMethodCallIgnored
                         dest.mkdir();
                     }
-                    FileUtils.copyFolder(f, dest, listener);
-                    PrivilegeManager.Files.preserveTime(context, f.getAbsolutePath(), dest.getAbsolutePath());
-                } else {
-                    FileUtils.copyFile(f, dest, listener);
-                    PrivilegeManager.Files.preserveTime(context, f.getAbsolutePath(), dest.getAbsolutePath());
                 }
-                if (copySize(f) != copySize(dest)) {
-                    throw new IOException("Move failed, copy mismatch: " + f.getName());
-                }
-                deleteRecursive(f);
-                done += itemTotal;
-                advanceActiveProgress(done, totalFiles);
+                final File moveSource = f;
+                final File moveTarget = dest;
+                final int moveFiles = itemTotal;
+                parallelMoves.add(() -> {
+                    if (moveSource.isDirectory()) {
+                        FileUtils.copyFolder(moveSource, moveTarget, listener);
+                    } else {
+                        FileUtils.copyFile(moveSource, moveTarget, listener);
+                    }
+                    PrivilegeManager.Files.preserveTime(context, moveSource.getAbsolutePath(), moveTarget.getAbsolutePath());
+                    if (copySize(moveSource) != copySize(moveTarget)) {
+                        throw new IOException("Move failed, copy mismatch: " + moveSource.getName());
+                    }
+                    deleteRecursive(moveSource);
+                    advanceActiveProgress(movedItems.addAndGet(moveFiles), totalFiles);
+                });
             } else if (item instanceof ZipEntryInfo z) {
                 if (dest != null) {
                     extractZipEntry(z, destinationFolder, dest.getName());
                 }
-                done++;
-                advanceActiveProgress(done, totalFiles);
+                advanceActiveProgress(movedItems.addAndGet(1), totalFiles);
             }
         }
+        ParallelTransfer.run(UiPrefs.getTransferThreads(context), parallelMoves, transferControl());
+        done = movedItems.get();
         completeActiveProgress(totalFiles, totalBytes);
         List<String> affectedNames = new ArrayList<>();
         for (File destFile : plan.values()) {
@@ -1149,6 +1162,12 @@ public class FileOperationsHelper {
             }
         }
 
+        // Everything below that is a plain Java copy is independent per item, so
+        // it is collected first and then moved by the transfer pool: that is the
+        // multi-threaded copy MT Manager offers, and on a batch of files it
+        // overlaps the per-file latency instead of paying it once per item.
+        final AtomicInteger copiedItems = new AtomicInteger(done);
+        List<ParallelTransfer.Task> parallelCopies = new ArrayList<>();
         for (Map.Entry<Object, File> entry : plan.entrySet()) {
             checkpointTransfer();
             Object item = entry.getKey();
@@ -1167,7 +1186,7 @@ public class FileOperationsHelper {
                     if (listener != null) listener.onFile(f, dest);
                     PrivilegeManager.Files.copyPreserving(context, f.getAbsolutePath(), dest.getAbsolutePath(),
                             f.isDirectory(), true);
-                    done += itemTotal;
+                    done = copiedItems.addAndGet(itemTotal);
                     advanceActiveProgress(done, totalFiles);
                     if (listener != null) listener.onBytes(itemBytes);
                     continue;
@@ -1202,15 +1221,22 @@ public class FileOperationsHelper {
                     //noinspection ResultOfMethodCallIgnored
                     dest.mkdir();
                 }
-                FileUtils.copyFolder(f, dest, listener);
-                PrivilegeManager.Files.preserveTime(context, f.getAbsolutePath(), dest.getAbsolutePath());
-            } else {
-                FileUtils.copyFile(f, dest, listener);
-                PrivilegeManager.Files.preserveTime(context, f.getAbsolutePath(), dest.getAbsolutePath());
             }
-            done += itemTotal;
-            advanceActiveProgress(done, totalFiles);
+            final File source = f;
+            final File target = dest;
+            final int itemFiles = itemTotal;
+            parallelCopies.add(() -> {
+                if (source.isDirectory()) {
+                    FileUtils.copyFolder(source, target, listener);
+                } else {
+                    FileUtils.copyFile(source, target, listener);
+                }
+                PrivilegeManager.Files.preserveTime(context, source.getAbsolutePath(), target.getAbsolutePath());
+                advanceActiveProgress(copiedItems.addAndGet(itemFiles), totalFiles);
+            });
         }
+        ParallelTransfer.run(UiPrefs.getTransferThreads(context), parallelCopies, transferControl());
+        done = copiedItems.get();
         for (Object item : items) {
             if (item instanceof ZipEntryInfo z) {
                 File dest = plan.get(z);

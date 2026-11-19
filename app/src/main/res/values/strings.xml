@@ -2646,4 +2646,6 @@ The stub application is replaced with the real one found in the dump and all inj
     <string name="run_script">Run script</string>
     <string name="run_script_confirm">Do you want to run this script?\n\n%s</string>
     <string name="shell_mode_status">Working Mode: %s</string>
+    <string name="transfer_threads">Transfer threads</string>
+    <string name="transfer_threads_summary">How many files a copy or upload moves at the same time.</string>
 </resources>
