@@ -105,8 +105,8 @@ public final class NetworkController {
         workers.execute(() -> {
             try {
                 List<NetworkProfile> profiles = new NetworkProfileStore(activity).load();
-                for (NetworkProfile loaded : profiles) android.util.Log.d("MPNet", "load " + loaded.protocol + ":"
-                        + loaded.name + " hostKey=" + (loaded.hostKey == null ? "null" : loaded.hostKey.isEmpty() ? "EMPTY" : loaded.hostKey));
+                for (NetworkProfile entry : profiles) android.util.Log.d("MPNet", "load " + entry.protocol + ":"
+                        + entry.name + " hostKey=" + (entry.hostKey == null ? "null" : entry.hostKey.isEmpty() ? "EMPTY" : entry.hostKey));
                 activity.handler.post(() -> {
                     if (!closed && !activity.isDestroyed()) loaded.accept(profiles);
                 });
