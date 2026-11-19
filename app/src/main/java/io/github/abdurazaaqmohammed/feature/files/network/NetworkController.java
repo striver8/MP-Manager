@@ -105,6 +105,8 @@ public final class NetworkController {
         workers.execute(() -> {
             try {
                 List<NetworkProfile> profiles = new NetworkProfileStore(activity).load();
+                for (NetworkProfile loaded : profiles) android.util.Log.d("MPNet", "load " + loaded.protocol + ":"
+                        + loaded.name + " hostKey=" + (loaded.hostKey == null ? "null" : loaded.hostKey.isEmpty() ? "EMPTY" : loaded.hostKey));
                 activity.handler.post(() -> {
                     if (!closed && !activity.isDestroyed()) loaded.accept(profiles);
                 });
@@ -113,6 +115,10 @@ public final class NetworkController {
     }
 
     private void persist(NetworkProfile profile, boolean pin) throws Exception {
+        android.util.Log.d("MPNet", "persist " + profile.protocol + ":" + profile.name + " hostKey="
+                + (profile.hostKey == null ? "null" : profile.hostKey.isEmpty() ? "EMPTY" : profile.hostKey)
+                + " auth=" + profile.authMethod + " keyLen=" + (profile.privateKey == null ? -1 : profile.privateKey.length())
+                + " rememberPin=" + pin);
         new NetworkProfileStore(activity).put(profile);
         spaceReports.remove(profile.pinId());
         if (profile.previousName != null) spaceReports.remove(profile.protocol + ":" + profile.previousName);

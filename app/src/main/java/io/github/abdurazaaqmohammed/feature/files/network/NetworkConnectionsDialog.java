@@ -193,6 +193,13 @@ final class NetworkConnectionsDialog implements AutoCloseable {
             profile.password = form.password.getText().toString();
             profile.domain = form.domain == null ? "" : form.domain.getText().toString().trim();
             profile.previousName = form.savedName;
+            // Reconnecting a saved connection must keep its pinned host key, otherwise every
+            // connect looks like a first connection and the pin is silently thrown away.
+            NetworkProfile loaded = form.loaded;
+            if (loaded != null && loaded.protocol.equals(profile.protocol) && loaded.address != null
+                    && loaded.address.trim().equals(profile.address) && loaded.hostKey != null) {
+                profile.hostKey = loaded.hostKey;
+            }
             if (protocol.equals("sftp")) {
                 profile.authMethod = form.usesKeyMode() ? "key" : "password";
                 if (profile.usesKeyAuth()) {
@@ -209,6 +216,7 @@ final class NetworkConnectionsDialog implements AutoCloseable {
                 else form.address.setError(e.getMessage());
                 return;
             }
+            form.loaded = profile;
             if (connect) {
                 boolean pane1 = activity.lastPaneSelected == 1;
                 dialog.dismiss();
@@ -465,6 +473,7 @@ final class NetworkConnectionsDialog implements AutoCloseable {
 
         void reset() {
             loading = true;
+            loaded = null;
             savedName = null;
             name.setText("");
             address.setText(protocol.equals("ftp") ? "" : protocol.equals("smb") ? "smb://" : protocol.equals("sftp") ? "sftp://" : "https://");
@@ -485,8 +494,12 @@ final class NetworkConnectionsDialog implements AutoCloseable {
             refreshSaved();
         }
 
+        /** The saved profile currently loaded in this form; keeps its pinned host key. */
+        NetworkProfile loaded;
+
         void load(NetworkProfile profile, boolean savedProfile) {
             loading = true;
+            loaded = profile;
             savedName = savedProfile ? profile.name : null;
             name.setText(profile.name); address.setText(profile.address);
             username.setText(profile.username); password.setText(profile.password);
