@@ -249,7 +249,7 @@ public final class NetworkController {
             if (failure instanceof SftpClient.HostKeyChangedException changed && !activity.isDestroyed()) {
                 // A changed key is a security event: show both fingerprints and require an explicit choice.
                 String endpoint = changed.host + ":" + changed.port;
-                showHostKeyDialog(profile, endpoint, "SHA256:" + changed.presented, changed.pinned, true, remember, pin, pane1);
+                showHostKeyDialog(profile, endpoint, "SHA256:" + changed.presented, "SHA256:" + changed.pinned, true, remember, pin, pane1);
             } else showError(failure);
         });
     }
