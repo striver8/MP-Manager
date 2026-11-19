@@ -5,8 +5,11 @@ import net.schmizz.sshj.sftp.FileAttributes;
 import net.schmizz.sshj.sftp.FileMode;
 import net.schmizz.sshj.sftp.OpenMode;
 import net.schmizz.sshj.sftp.RemoteFile;
+import net.schmizz.sshj.DefaultConfig;
+import net.schmizz.sshj.common.Factory;
 import net.schmizz.sshj.sftp.RemoteResourceInfo;
 import net.schmizz.sshj.sftp.SFTPClient;
+import net.schmizz.sshj.transport.kex.KeyExchange;
 import net.schmizz.sshj.transport.verification.HostKeyVerifier;
 import net.schmizz.sshj.userauth.keyprovider.KeyProvider;
 
@@ -28,6 +31,7 @@ import java.util.Base64;
 import java.util.Collections;
 import java.util.EnumSet;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * SFTP (SSH) storage. The connection root is the account's home directory.
@@ -115,7 +119,7 @@ public final class SftpClient implements RemoteClient {
         if (username == null || username.trim().isEmpty())
             throw new IllegalArgumentException("SFTP requires a username");
         ensureBouncyCastle();
-        ssh = new SSHClient();
+        ssh = newClient();
         ssh.setConnectTimeout(15_000);
         ssh.setTimeout(60_000);
         String known = knownHostKey == null ? "" : knownHostKey.trim();
@@ -166,7 +170,7 @@ public final class SftpClient implements RemoteClient {
     /** Connects only far enough to read the host key; the user confirms it before a real login. */
     public static HostKeyInfo probeHostKey(String host, int port) throws IOException {
         ensureBouncyCastle();
-        SSHClient probe = new SSHClient();
+        SSHClient probe = newClient();
         probe.setConnectTimeout(15_000);
         PublicKey[] presented = {null};
         probe.addHostKeyVerifier(new HostKeyVerifier() {
@@ -188,6 +192,22 @@ public final class SftpClient implements RemoteClient {
         } finally {
             try { if (probe.isConnected()) probe.disconnect(); } catch (Exception ignored) {}
         }
+    }
+
+    /**
+     * Android ships a stripped BouncyCastle without X25519, so curve25519 key exchange fails with
+     * "no such algorithm: X25519". Drop those proposals and let the DH/ECDH groups negotiate.
+     */
+    private static SSHClient newClient() {
+        DefaultConfig config = new DefaultConfig();
+        List<Factory.Named<KeyExchange>> supported = new ArrayList<>();
+        for (Factory.Named<KeyExchange> factory : config.getKeyExchangeFactories()) {
+            String name = factory.getName();
+            if (name != null && name.toLowerCase(Locale.ROOT).contains("curve25519")) continue;
+            supported.add(factory);
+        }
+        if (!supported.isEmpty()) config.setKeyExchangeFactories(supported);
+        return new SSHClient(config);
     }
 
     private static void ensureBouncyCastle() {
