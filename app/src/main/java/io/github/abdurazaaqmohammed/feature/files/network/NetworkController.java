@@ -105,8 +105,6 @@ public final class NetworkController {
         workers.execute(() -> {
             try {
                 List<NetworkProfile> profiles = new NetworkProfileStore(activity).load();
-                for (NetworkProfile entry : profiles) android.util.Log.d("MPNet", "load " + entry.protocol + ":"
-                        + entry.name + " hostKey=" + (entry.hostKey == null ? "null" : entry.hostKey.isEmpty() ? "EMPTY" : entry.hostKey));
                 activity.handler.post(() -> {
                     if (!closed && !activity.isDestroyed()) loaded.accept(profiles);
                 });
@@ -115,10 +113,6 @@ public final class NetworkController {
     }
 
     private void persist(NetworkProfile profile, boolean pin) throws Exception {
-        android.util.Log.d("MPNet", "persist " + profile.protocol + ":" + profile.name + " hostKey="
-                + (profile.hostKey == null ? "null" : profile.hostKey.isEmpty() ? "EMPTY" : profile.hostKey)
-                + " auth=" + profile.authMethod + " keyLen=" + (profile.privateKey == null ? -1 : profile.privateKey.length())
-                + " rememberPin=" + pin);
         new NetworkProfileStore(activity).put(profile);
         spaceReports.remove(profile.pinId());
         if (profile.previousName != null) spaceReports.remove(profile.protocol + ":" + profile.previousName);
@@ -255,7 +249,7 @@ public final class NetworkController {
             if (failure instanceof SftpClient.HostKeyChangedException changed && !activity.isDestroyed()) {
                 // A changed key is a security event: show both fingerprints and require an explicit choice.
                 String endpoint = changed.host + ":" + changed.port;
-                showHostKeyDialog(profile, endpoint, "SHA256:" + changed.presented, changed.pinned, true, remember, pin, pane1);
+                showHostKeyDialog(profile, endpoint, "SHA256:" + changed.presented, "SHA256:" + changed.pinned, true, remember, pin, pane1);
             } else showError(failure);
         });
     }
