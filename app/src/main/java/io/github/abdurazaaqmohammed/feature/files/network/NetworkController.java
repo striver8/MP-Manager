@@ -379,31 +379,28 @@ public final class NetworkController {
             // simply run with fewer workers, down to the old serial behaviour.
             NetworkProfile profile = profileByConnection.get(destination.connection.id);
             int threads = ParallelTransfer.clamp(UiPrefs.getTransferThreads(activity));
-            int helpers = profile == null ? 0
-                    : Math.min(threads, Math.max(1, items.size())) - 1;
+            int helpers = profile == null ? 0 : threads - 1;
             List<RemoteClient> extra = helpers > 0
                     ? openTransferHelpers(profile, helpers) : Collections.emptyList();
             final List<RemoteClient> pool = new ArrayList<>(1 + extra.size());
             pool.add(destination.connection.client);
             pool.addAll(extra);
             final AtomicInteger next = new AtomicInteger();
-            List<ParallelTransfer.Task> tasks = new ArrayList<>(items.size());
-            for (Object item : items) {
-                final File source = (File) item;
-                tasks.add(() -> {
-                    checkpoint();
-                    if (listener != null) listener.checkpoint();
-                    RemoteClient worker = pool.get(Math.floorMod(next.getAndIncrement(), pool.size()));
-                    uploadSource(source, worker, destination.entry.path, listener);
-                    checkpoint();
-                    if (listener != null) listener.checkpoint();
-                    if (move) deleteSource(source);
-                });
-            }
+            List<ParallelTransfer.Task> tasks = new ArrayList<>();
             try {
+                // Folders are walked here, on one session: creating them is pure
+                // metadata. Every leaf file then becomes its own task, so a single
+                // folder full of files still fills the whole pool.
+                for (Object item : items) {
+                    checkpoint();
+                    planUpload((File) item, destination.entry.path, pool, next, tasks, listener);
+                }
                 ParallelTransfer.run(threads, tasks, null);
             } finally {
                 closeHelpers(extra);
+            }
+            if (move) {
+                for (Object item : items) deleteSource((File) item);
             }
         } finally { activity.handler.post(activity::refreshAllPanes); }
     }
@@ -464,14 +461,21 @@ public final class NetworkController {
         }
     }
 
-    private void uploadSource(File source, RemoteClient destination, String parent,
-                              FileUtils.TransferListener listener) throws IOException {
+    /**
+     * Walks one item on the control session and turns every leaf file into a
+     * task, so folders uploaded into a remote pane get the same parallelism as a
+     * batch of loose files.
+     */
+    private void planUpload(File source, String parent, List<RemoteClient> pool, AtomicInteger next,
+                            List<ParallelTransfer.Task> tasks, FileUtils.TransferListener listener)
+            throws IOException {
         checkpoint();
         if (listener != null) listener.checkpoint();
         if (!(source instanceof SafFile) && Files.isSymbolicLink(source.toPath()))
             throw new IOException("Symbolic links cannot be uploaded");
         String path = RemotePath.child(parent, source.getName());
-        if (destination.stat(path) != null) throw new IOException("Destination already exists: " + source.getName());
+        if (pool.get(0).stat(path) != null)
+            throw new IOException("Destination already exists: " + source.getName());
         if (source.isDirectory()) {
             List<? extends File> children;
             if (source instanceof SafFile) children = SafFs.children((SafFile) source);
@@ -480,22 +484,35 @@ public final class NetworkController {
                 children = listed == null ? null : Arrays.asList(listed);
             }
             if (children == null) throw new IOException("Cannot read source folder: " + source.getName());
-            destination.mkdir(path);
-            for (File child : children) uploadSource(child, destination, path, listener);
+            pool.get(0).mkdir(path);
+            for (File child : children) planUpload(child, path, pool, next, tasks, listener);
         } else {
-            if (listener != null) listener.onFile(source, new File("/network/" + path));
-            try (InputStream input = RootStaging.openInputStream(activity, source)) {
-                InputStream monitored = new FilterInputStream(input) {
-                    @Override public int read(byte[] buffer, int offset, int length) throws IOException {
-                        if (listener != null) listener.checkpoint();
-                        int count = super.read(buffer, offset, length);
-                        if (count > 0 && listener != null) listener.onBytes(count);
-                        return count;
-                    }
-                };
-                // Provider metadata may not expose a reliable length: use chunked PUT.
-                destination.upload(path, monitored, source instanceof SafFile ? -1 : source.length());
-            }
+            final String target = path;
+            tasks.add(() -> {
+                checkpoint();
+                if (listener != null) listener.checkpoint();
+                RemoteClient worker = pool.get(Math.floorMod(next.getAndIncrement(), pool.size()));
+                uploadFile(source, worker, target, listener);
+            });
+        }
+    }
+
+    private void uploadFile(File source, RemoteClient destination, String path,
+                            FileUtils.TransferListener listener) throws IOException {
+        if (destination.stat(path) != null)
+            throw new IOException("Destination already exists: " + RemotePath.name(path));
+        if (listener != null) listener.onFile(source, new File("/network/" + path));
+        try (InputStream input = RootStaging.openInputStream(activity, source)) {
+            InputStream monitored = new FilterInputStream(input) {
+                @Override public int read(byte[] buffer, int offset, int length) throws IOException {
+                    if (listener != null) listener.checkpoint();
+                    int count = super.read(buffer, offset, length);
+                    if (count > 0 && listener != null) listener.onBytes(count);
+                    return count;
+                }
+            };
+            // Provider metadata may not expose a reliable length: use chunked PUT.
+            destination.upload(path, monitored, source instanceof SafFile ? -1 : source.length());
         }
     }
 
