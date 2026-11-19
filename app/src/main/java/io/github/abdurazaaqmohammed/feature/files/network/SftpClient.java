@@ -7,6 +7,7 @@ import net.schmizz.sshj.sftp.OpenMode;
 import net.schmizz.sshj.sftp.RemoteFile;
 import net.schmizz.sshj.DefaultConfig;
 import net.schmizz.sshj.common.Factory;
+import net.schmizz.sshj.common.SecurityUtils;
 import net.schmizz.sshj.sftp.RemoteResourceInfo;
 import net.schmizz.sshj.sftp.SFTPClient;
 import net.schmizz.sshj.transport.kex.KeyExchange;
@@ -23,6 +24,7 @@ import java.io.InterruptedIOException;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.security.Provider;
 import java.security.PublicKey;
 import java.security.Security;
 import java.security.interfaces.RSAPublicKey;
@@ -210,10 +212,30 @@ public final class SftpClient implements RemoteClient {
         return new SSHClient(config);
     }
 
+    /**
+     * Android registers a stripped BouncyCastle as "BC" whose digests were removed in Android P, and
+     * sshj resolves algorithms through that name, so every handshake died with "The BC provider no
+     * longer provides an implementation for MessageDigest.SHA-256". Replace that provider with the
+     * bundled one (android.os.Build is the only place this differs; on a desktop JVM the existing BC
+     * already works and is left alone).
+     */
     private static void ensureBouncyCastle() {
-        // sshj needs BouncyCastle for modern key exchange; MainActivity registers it too.
-        if (Security.getProvider(BouncyCastleProvider.PROVIDER_NAME) == null)
-            Security.addProvider(new BouncyCastleProvider());
+        Provider existing = Security.getProvider(BouncyCastleProvider.PROVIDER_NAME);
+        if (existing != null && !supportsSha256(existing)) {
+            Security.removeProvider(BouncyCastleProvider.PROVIDER_NAME);
+            existing = null;
+        }
+        if (existing == null) Security.addProvider(new BouncyCastleProvider());
+        SecurityUtils.setSecurityProvider(BouncyCastleProvider.PROVIDER_NAME);
+    }
+
+    private static boolean supportsSha256(Provider provider) {
+        try {
+            MessageDigest.getInstance("SHA-256", provider);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     private static String algorithmName(PublicKey key) {
