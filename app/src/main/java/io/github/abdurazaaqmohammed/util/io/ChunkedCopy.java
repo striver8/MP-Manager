@@ -75,13 +75,16 @@ public final class ChunkedCopy {
             return;
         }
         long[] ranges = ranges(size, threads);
-        FileChannel destinationChannel = null;
-        boolean destinationOpened = false;
+        final FileChannel sourceChannel = FileChannel.open(source.toPath(), StandardOpenOption.READ);
+        final FileChannel destinationChannel;
         try {
-            FileChannel sourceChannel = FileChannel.open(source.toPath(), StandardOpenOption.READ);
             destinationChannel = FileChannel.open(destination.toPath(),
                     StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING);
-            destinationOpened = true;
+        } catch (IOException e) {
+            closeQuietly(sourceChannel);
+            throw e;
+        }
+        try {
             // Reserve the space up front so a range that starts after another
             // worker's still lands on a correctly sized file.
             destinationChannel.truncate(0L);
@@ -97,9 +100,10 @@ public final class ChunkedCopy {
             destinationChannel.force(true);
         } catch (IOException | TransferCancelledException e) {
             // Do not leave a truncated file that the caller reads as success.
-            if (destinationOpened) destination.delete();
+            destination.delete();
             throw e;
         } finally {
+            closeQuietly(sourceChannel);
             closeQuietly(destinationChannel);
         }
     }
