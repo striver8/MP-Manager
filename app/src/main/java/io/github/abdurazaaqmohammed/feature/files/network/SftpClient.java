@@ -45,6 +45,8 @@ import java.util.Locale;
  */
 public final class SftpClient implements RemoteClient {
     private static final int BUFFER_SIZE = 1024 * 1024;
+    /** A single SFTP read or write request must stay small; every server caps it near 32 KB. */
+    private static final int RANGE_PACKET = 32 * 1024;
 
     private final SSHClient ssh;
     private final SFTPClient sftp;
@@ -372,7 +374,8 @@ public final class SftpClient implements RemoteClient {
     }
 
     private static void copyRange(RemoteFile file, long offset, long length, InputStream source) throws IOException {
-        byte[] buffer = new byte[BUFFER_SIZE];
+        // One WRITE request per chunk: servers cap the payload at about 32 KB.
+        byte[] buffer = new byte[RANGE_PACKET];
         long sent = 0L;
         while (sent < length) {
             if (Thread.currentThread().isInterrupted()) throw new InterruptedIOException("Transfer cancelled");
@@ -385,7 +388,7 @@ public final class SftpClient implements RemoteClient {
     }
 
     private static void copyRange(RemoteFile file, long offset, long length, OutputStream destination) throws IOException {
-        byte[] buffer = new byte[BUFFER_SIZE];
+        byte[] buffer = new byte[RANGE_PACKET];
         long received = 0L;
         while (received < length) {
             if (Thread.currentThread().isInterrupted()) throw new InterruptedIOException("Transfer cancelled");
