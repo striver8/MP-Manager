@@ -331,6 +331,72 @@ public final class SftpClient implements RemoteClient {
         finally { closeFile(file); }
     }
 
+    @Override public boolean supportsRanges() { return true; }
+
+    /** One open handle, one offset per worker: the range is read in place, not re-read. */
+    @Override public void downloadRange(String path, long offset, long length, OutputStream destination)
+            throws IOException {
+        RemoteFile file = null;
+        try {
+            file = sftp.open(remotePath(path), EnumSet.of(OpenMode.READ));
+            copyRange(file, offset, length, destination);
+        } catch (IOException e) { throw io("download", path, e); }
+        finally { closeFile(file); }
+    }
+
+    /**
+     * Fills a reserved file. The handle is opened in write mode and every worker
+     * starts at its own offset, so the file is never read back to find the cursor.
+     * The source stream already starts at that range.
+     */
+    @Override public void uploadRange(InputStream source, long offset, long length, String path)
+            throws IOException {
+        WebDavClient.requireNonRoot(path);
+        RemoteFile file = null;
+        try {
+            file = sftp.open(remotePath(path), EnumSet.of(OpenMode.WRITE));
+            copyRange(file, offset, length, source);
+        } catch (IOException e) { throw io("upload", path, e); }
+        finally { closeFile(file); }
+    }
+
+    /** Creates the target with its final length, so workers can write ranges into it. */
+    @Override public void createReserved(String path, long size) throws IOException {
+        WebDavClient.requireNonRoot(path);
+        RemoteFile file = null;
+        try {
+            file = sftp.open(remotePath(path), EnumSet.of(OpenMode.WRITE, OpenMode.CREAT, OpenMode.TRUNC));
+            file.setLength(size);
+        } catch (IOException e) { throw io("create", path, e); }
+        finally { closeFile(file); }
+    }
+
+    private static void copyRange(RemoteFile file, long offset, long length, InputStream source) throws IOException {
+        byte[] buffer = new byte[BUFFER_SIZE];
+        long sent = 0L;
+        while (sent < length) {
+            if (Thread.currentThread().isInterrupted()) throw new InterruptedIOException("Transfer cancelled");
+            int want = (int) Math.min(buffer.length, length - sent);
+            int count = source.read(buffer, 0, want);
+            if (count <= 0) throw new IOException("Source ended inside the range");
+            file.write(offset + sent, buffer, 0, count);
+            sent += count;
+        }
+    }
+
+    private static void copyRange(RemoteFile file, long offset, long length, OutputStream destination) throws IOException {
+        byte[] buffer = new byte[BUFFER_SIZE];
+        long received = 0L;
+        while (received < length) {
+            if (Thread.currentThread().isInterrupted()) throw new InterruptedIOException("Transfer cancelled");
+            int want = (int) Math.min(buffer.length, length - received);
+            int count = file.read(offset + received, buffer, 0, want);
+            if (count <= 0) throw new IOException("Remote file ended inside the range");
+            destination.write(buffer, 0, count);
+            received += count;
+        }
+    }
+
     @Override public void mkdir(String path) throws IOException {
         WebDavClient.requireNonRoot(path);
         try { sftp.mkdir(remotePath(path)); }

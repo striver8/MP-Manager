@@ -94,7 +94,9 @@ public final class UiPrefs {
         try {
             int v = PreferenceManager.getDefaultSharedPreferences(context)
                     .getInt(TRANSFER_THREADS_KEY, ParallelTransfer.DEFAULT_THREADS);
-            return ParallelTransfer.clamp(v);
+            int clamped = ParallelTransfer.clamp(v);
+            ParallelTransfer.setConfigured(clamped);
+            return clamped;
         } catch (Exception e) {
             return ParallelTransfer.DEFAULT_THREADS;
         }
@@ -104,6 +106,7 @@ public final class UiPrefs {
         try {
             PreferenceManager.getDefaultSharedPreferences(context).edit()
                     .putInt(TRANSFER_THREADS_KEY, ParallelTransfer.clamp(threads)).apply();
+            ParallelTransfer.setConfigured(threads);
         } catch (Exception ignored) {
         }
     }

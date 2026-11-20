@@ -23,6 +23,7 @@ import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InterruptedIOException;
+import java.io.RandomAccessFile;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -43,6 +44,7 @@ import io.github.abdurazaaqmohammed.MPManager.R;
 import io.github.abdurazaaqmohammed.ui.main.MainFilesArrayAdapter;
 import io.github.abdurazaaqmohammed.data.prefs.SidebarPins;
 import io.github.abdurazaaqmohammed.data.prefs.UiPrefs;
+import io.github.abdurazaaqmohammed.util.io.ChunkedCopy;
 import io.github.abdurazaaqmohammed.util.io.FileUtils;
 import io.github.abdurazaaqmohammed.util.io.ParallelTransfer;
 import io.github.abdurazaaqmohammed.privilege.impl.RootStaging;
@@ -486,6 +488,26 @@ public final class NetworkController {
             if (children == null) throw new IOException("Cannot read source folder: " + source.getName());
             pool.get(0).mkdir(path);
             for (File child : children) planUpload(child, path, pool, next, tasks, listener);
+        } else if (!(source instanceof SafFile) && pool.get(0).supportsRanges()
+                && ChunkedCopy.worthSplitting(source.length(), pool.size())) {
+            // A big single file gets one reserved range per connection, so the
+            // upload is byte-parallel instead of one session in the bottleneck.
+            // The file is reserved here, on the control session, before any
+            // worker starts writing into it.
+            final String target = path;
+            final long size = source.length();
+            pool.get(0).createReserved(target, size);
+            final long[] ranges = ChunkedCopy.ranges(size, pool.size());
+            for (int i = 0; i < ranges.length; i += 2) {
+                final long start = ranges[i];
+                final long length = ranges[i + 1] - ranges[i];
+                tasks.add(() -> {
+                    checkpoint();
+                    if (listener != null) listener.checkpoint();
+                    RemoteClient worker = pool.get(Math.floorMod(next.getAndIncrement(), pool.size()));
+                    uploadRange(source, worker, target, start, length, listener);
+                });
+            }
         } else {
             final String target = path;
             tasks.add(() -> {
@@ -513,6 +535,29 @@ public final class NetworkController {
             };
             // Provider metadata may not expose a reliable length: use chunked PUT.
             destination.upload(path, monitored, source instanceof SafFile ? -1 : source.length());
+        }
+    }
+
+    /** Writes one reserved range of a local file, keeping the progress listener informed. */
+    private void uploadRange(File source, RemoteClient destination, String path, long offset, long length,
+                             FileUtils.TransferListener listener) throws IOException {
+        if (listener != null) listener.onFile(source, new File("/network/" + path));
+        final long[] remaining = {length};
+        try (RandomAccessFile input = new RandomAccessFile(source, "r")) {
+            input.seek(offset);
+            InputStream monitored = new FilterInputStream(input) {
+                @Override public int read(byte[] buffer, int off, int want) throws IOException {
+                    if (listener != null) listener.checkpoint();
+                    if (remaining[0] <= 0) return -1;
+                    int count = super.read(buffer, off, (int) Math.min(want, remaining[0]));
+                    if (count > 0) {
+                        remaining[0] -= count;
+                        if (listener != null) listener.onBytes(count);
+                    }
+                    return count;
+                }
+            };
+            destination.uploadRange(monitored, offset, length, path);
         }
     }
 
