@@ -543,13 +543,22 @@ public final class NetworkController {
                              FileUtils.TransferListener listener) throws IOException {
         if (listener != null) listener.onFile(source, new File("/network/" + path));
         final long[] remaining = {length};
-        try (RandomAccessFile input = new RandomAccessFile(source, "r")) {
+        // A random-access file is not a stream: the range has to be read from a
+        // fixed offset, so the reading side is spelled out instead of wrapped.
+        final RandomAccessFile input = new RandomAccessFile(source, "r");
+        try {
             input.seek(offset);
-            InputStream monitored = new FilterInputStream(input) {
+            InputStream monitored = new InputStream() {
+                @Override public int read() throws IOException {
+                    byte[] one = new byte[1];
+                    int count = read(one, 0, 1);
+                    return count <= 0 ? -1 : (one[0] & 0xFF);
+                }
+
                 @Override public int read(byte[] buffer, int off, int want) throws IOException {
                     if (listener != null) listener.checkpoint();
                     if (remaining[0] <= 0) return -1;
-                    int count = super.read(buffer, off, (int) Math.min(want, remaining[0]));
+                    int count = input.read(buffer, off, (int) Math.min(want, remaining[0]));
                     if (count > 0) {
                         remaining[0] -= count;
                         if (listener != null) listener.onBytes(count);
@@ -558,6 +567,8 @@ public final class NetworkController {
                 }
             };
             destination.uploadRange(monitored, offset, length, path);
+        } finally {
+            try { input.close(); } catch (IOException ignored) {}
         }
     }
 
