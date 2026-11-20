@@ -18,6 +18,8 @@ import org.bouncycastle.jce.provider.BouncyCastleProvider;
 
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.FilterInputStream;
+import java.io.FilterOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InterruptedIOException;
@@ -314,7 +316,7 @@ public final class SftpClient implements RemoteClient {
         RemoteFile file = null;
         try {
             file = sftp.open(remotePath(path), EnumSet.of(OpenMode.READ));
-            try (InputStream source = file.new RemoteFileInputStream()) { copy(source, destination); }
+            try (InputStream source = packetSized(file.new RemoteFileInputStream())) { copy(source, destination); }
         } catch (IOException e) { throw io("download", path, e); }
         finally { closeFile(file); }
     }
@@ -328,7 +330,7 @@ public final class SftpClient implements RemoteClient {
         RemoteFile file = null;
         try {
             file = sftp.open(remotePath(path), EnumSet.of(OpenMode.WRITE, OpenMode.CREAT, OpenMode.TRUNC));
-            try (OutputStream destination = file.new RemoteFileOutputStream()) { copy(source, destination); }
+            try (OutputStream destination = packetSized(file.new RemoteFileOutputStream())) { copy(source, destination); }
         } catch (IOException e) { throw io("upload", path, e); }
         finally { closeFile(file); }
     }
@@ -451,6 +453,33 @@ public final class SftpClient implements RemoteClient {
 
     private static void closeFile(RemoteFile file) {
         if (file != null) try { file.close(); } catch (Exception ignored) {}
+    }
+
+    /**
+     * A bulk read or write reaches the server as one SFTP request, and every
+     * server rejects requests above its packet limit, so the big buffers stay on
+     * our side and the wire sees packet-sized chunks.
+     */
+    private static OutputStream packetSized(OutputStream destination) {
+        return new FilterOutputStream(destination) {
+            @Override public void write(int one) throws IOException { out.write(one); }
+
+            @Override public void write(byte[] buffer, int offset, int length) throws IOException {
+                for (int sent = 0; sent < length; ) {
+                    int count = Math.min(RANGE_PACKET, length - sent);
+                    out.write(buffer, offset + sent, count);
+                    sent += count;
+                }
+            }
+        };
+    }
+
+    private static InputStream packetSized(InputStream source) {
+        return new FilterInputStream(source) {
+            @Override public int read(byte[] buffer, int offset, int length) throws IOException {
+                return super.read(buffer, offset, Math.min(length, RANGE_PACKET));
+            }
+        };
     }
 
     private static void copy(InputStream source, OutputStream destination) throws IOException {
