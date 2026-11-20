@@ -18,6 +18,8 @@ import org.bouncycastle.jce.provider.BouncyCastleProvider;
 
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.FilterInputStream;
+import java.io.FilterOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InterruptedIOException;
@@ -45,6 +47,8 @@ import java.util.Locale;
  */
 public final class SftpClient implements RemoteClient {
     private static final int BUFFER_SIZE = 1024 * 1024;
+    /** A single SFTP read or write request must stay small; every server caps it near 32 KB. */
+    private static final int RANGE_PACKET = 32 * 1024;
 
     private final SSHClient ssh;
     private final SFTPClient sftp;
@@ -312,7 +316,7 @@ public final class SftpClient implements RemoteClient {
         RemoteFile file = null;
         try {
             file = sftp.open(remotePath(path), EnumSet.of(OpenMode.READ));
-            try (InputStream source = file.new RemoteFileInputStream()) { copy(source, destination); }
+            try (InputStream source = packetSized(file.new RemoteFileInputStream())) { copy(source, destination); }
         } catch (IOException e) { throw io("download", path, e); }
         finally { closeFile(file); }
     }
@@ -326,9 +330,76 @@ public final class SftpClient implements RemoteClient {
         RemoteFile file = null;
         try {
             file = sftp.open(remotePath(path), EnumSet.of(OpenMode.WRITE, OpenMode.CREAT, OpenMode.TRUNC));
-            try (OutputStream destination = file.new RemoteFileOutputStream()) { copy(source, destination); }
+            try (OutputStream destination = packetSized(file.new RemoteFileOutputStream())) { copy(source, destination); }
         } catch (IOException e) { throw io("upload", path, e); }
         finally { closeFile(file); }
+    }
+
+    @Override public boolean supportsRanges() { return true; }
+
+    /** One open handle, one offset per worker: the range is read in place, not re-read. */
+    @Override public void downloadRange(String path, long offset, long length, OutputStream destination)
+            throws IOException {
+        RemoteFile file = null;
+        try {
+            file = sftp.open(remotePath(path), EnumSet.of(OpenMode.READ));
+            copyRange(file, offset, length, destination);
+        } catch (IOException e) { throw io("download", path, e); }
+        finally { closeFile(file); }
+    }
+
+    /**
+     * Fills a reserved file. The handle is opened in write mode and every worker
+     * starts at its own offset, so the file is never read back to find the cursor.
+     * The source stream already starts at that range.
+     */
+    @Override public void uploadRange(InputStream source, long offset, long length, String path)
+            throws IOException {
+        WebDavClient.requireNonRoot(path);
+        RemoteFile file = null;
+        try {
+            file = sftp.open(remotePath(path), EnumSet.of(OpenMode.WRITE));
+            copyRange(file, offset, length, source);
+        } catch (IOException e) { throw io("upload", path, e); }
+        finally { closeFile(file); }
+    }
+
+    /** Creates the target with its final length, so workers can write ranges into it. */
+    @Override public void createReserved(String path, long size) throws IOException {
+        WebDavClient.requireNonRoot(path);
+        RemoteFile file = null;
+        try {
+            file = sftp.open(remotePath(path), EnumSet.of(OpenMode.WRITE, OpenMode.CREAT, OpenMode.TRUNC));
+            file.setLength(size);
+        } catch (IOException e) { throw io("create", path, e); }
+        finally { closeFile(file); }
+    }
+
+    private static void copyRange(RemoteFile file, long offset, long length, InputStream source) throws IOException {
+        // One WRITE request per chunk: servers cap the payload at about 32 KB.
+        byte[] buffer = new byte[RANGE_PACKET];
+        long sent = 0L;
+        while (sent < length) {
+            if (Thread.currentThread().isInterrupted()) throw new InterruptedIOException("Transfer cancelled");
+            int want = (int) Math.min(buffer.length, length - sent);
+            int count = source.read(buffer, 0, want);
+            if (count <= 0) throw new IOException("Source ended inside the range");
+            file.write(offset + sent, buffer, 0, count);
+            sent += count;
+        }
+    }
+
+    private static void copyRange(RemoteFile file, long offset, long length, OutputStream destination) throws IOException {
+        byte[] buffer = new byte[RANGE_PACKET];
+        long received = 0L;
+        while (received < length) {
+            if (Thread.currentThread().isInterrupted()) throw new InterruptedIOException("Transfer cancelled");
+            int want = (int) Math.min(buffer.length, length - received);
+            int count = file.read(offset + received, buffer, 0, want);
+            if (count <= 0) throw new IOException("Remote file ended inside the range");
+            destination.write(buffer, 0, count);
+            received += count;
+        }
     }
 
     @Override public void mkdir(String path) throws IOException {
@@ -382,6 +453,33 @@ public final class SftpClient implements RemoteClient {
 
     private static void closeFile(RemoteFile file) {
         if (file != null) try { file.close(); } catch (Exception ignored) {}
+    }
+
+    /**
+     * A bulk read or write reaches the server as one SFTP request, and every
+     * server rejects requests above its packet limit, so the big buffers stay on
+     * our side and the wire sees packet-sized chunks.
+     */
+    private static OutputStream packetSized(OutputStream destination) {
+        return new FilterOutputStream(destination) {
+            @Override public void write(int one) throws IOException { out.write(one); }
+
+            @Override public void write(byte[] buffer, int offset, int length) throws IOException {
+                for (int sent = 0; sent < length; ) {
+                    int count = Math.min(RANGE_PACKET, length - sent);
+                    out.write(buffer, offset + sent, count);
+                    sent += count;
+                }
+            }
+        };
+    }
+
+    private static InputStream packetSized(InputStream source) {
+        return new FilterInputStream(source) {
+            @Override public int read(byte[] buffer, int offset, int length) throws IOException {
+                return super.read(buffer, offset, Math.min(length, RANGE_PACKET));
+            }
+        };
     }
 
     private static void copy(InputStream source, OutputStream destination) throws IOException {

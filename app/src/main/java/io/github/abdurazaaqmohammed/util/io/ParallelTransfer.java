@@ -31,6 +31,9 @@ public final class ParallelTransfer {
     public static final int MAX_THREADS = 8;
     public static final int DEFAULT_THREADS = 4;
 
+    /** Worker count from the transfer settings; context-free callers read it here. */
+    private static volatile int configured = DEFAULT_THREADS;
+
     /** One unit of independent work; usually the copy of one file or folder. */
     public interface Task {
         void run() throws Exception;
@@ -42,6 +45,11 @@ public final class ParallelTransfer {
     public static int clamp(int threads) {
         return Math.max(MIN_THREADS, Math.min(MAX_THREADS, threads));
     }
+
+    /** Workers configured by {@code UiPrefs#setTransferThreads}, for callers with no context. */
+    public static int configured() { return configured; }
+
+    public static void setConfigured(int threads) { configured = clamp(threads); }
 
     /**
      * Runs every task, keeping at most {@code threads} in flight.

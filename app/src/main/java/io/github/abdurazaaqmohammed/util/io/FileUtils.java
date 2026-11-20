@@ -473,6 +473,14 @@ public class FileUtils {
         // FileChannel.transferTo delegates to sendfile(2) on Linux — the kernel
         // copies data without any user-space buffer, making this the fastest
         // possible file copy on Android internal and shared storage.
+        // A large single file is still one byte stream, so it gets one range
+        // per worker instead of one reader for the whole copy.
+        int workers = ParallelTransfer.configured();
+        if (ChunkedCopy.worthSplitting(sourceFile.length(), workers)
+                && !(sourceFile instanceof SafFile) && !(destinationFile instanceof SafFile)) {
+            ChunkedCopy.copy(sourceFile, destinationFile, workers, listener);
+            return;
+        }
         if (LegacyUtils.supportsFileChannel) {
             if (destinationFile.exists() && Files.isSameFile(sourceFile.toPath(), destinationFile.toPath())) {
                 throw new IOException("Source and destination are the same file: " + sourceFile);

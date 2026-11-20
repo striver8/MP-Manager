@@ -4,12 +4,15 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
+import java.io.RandomAccessFile;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import io.github.abdurazaaqmohammed.util.io.ChunkedCopy;
 import io.github.abdurazaaqmohammed.util.io.FileUtils;
 import io.github.abdurazaaqmohammed.util.io.ParallelTransfer;
 
@@ -38,6 +41,14 @@ public final class RemoteTransfers {
         List<File> targets = new ArrayList<>();
         collect(connections.get(0), root, destination, files, targets, listener);
         if (files.isEmpty()) return;
+
+        // A single large file is not a list: splitting it by byte range is the
+        // only way several sessions help, and it needs a server that supports ranges.
+        if (files.size() == 1 && connections.get(0).supportsRanges()
+                && ChunkedCopy.worthSplitting(files.get(0).size, connections.size())) {
+            downloadChunked(connections, files.get(0), targets.get(0), listener);
+            return;
+        }
 
         final AtomicInteger next = new AtomicInteger();
         List<ParallelTransfer.Task> tasks = new ArrayList<>(files.size());
@@ -91,6 +102,68 @@ public final class RemoteTransfers {
             temporary.delete();
         }
         if (entry.modified > 0) destination.setLastModified(entry.modified);
+    }
+
+    /** One large file, one reserved range per connection, written in parallel. */
+    private static void downloadChunked(List<RemoteClient> connections, RemoteEntry entry, File destination,
+                                        FileUtils.TransferListener listener) throws IOException {
+        if (destination.exists()) throw new IOException("Destination already exists: " + destination.getName());
+        if (listener != null) {
+            listener.checkpoint();
+            listener.onFile(new File("/network/" + entry.path), destination);
+        }
+        long size = entry.size;
+        long[] ranges = ChunkedCopy.ranges(size, connections.size());
+        File temporary = File.createTempFile(".mp-download-", ".part", destination.getParentFile());
+        try {
+            final AtomicInteger next = new AtomicInteger();
+            List<ParallelTransfer.Task> tasks = new ArrayList<>(ranges.length / 2);
+            for (int i = 0; i < ranges.length; i += 2) {
+                final long start = ranges[i];
+                final long length = ranges[i + 1] - ranges[i];
+                tasks.add(() -> {
+                    if (listener != null) listener.checkpoint();
+                    RemoteClient worker = connections.get(Math.floorMod(next.getAndIncrement(), connections.size()));
+                    try (RandomAccessFile output = new RandomAccessFile(temporary, "rw")) {
+                        worker.downloadRange(entry.path, start, length, new RangedFileOutput(output, start));
+                    }
+                });
+            }
+            ParallelTransfer.run(Math.min(connections.size(), tasks.size()), tasks, null);
+            try (RandomAccessFile output = new RandomAccessFile(temporary, "r")) {
+                output.getFD().sync();
+                if (output.length() != size)
+                    throw new IOException("Downloaded size does not match; source may have changed");
+            }
+            Files.move(temporary.toPath(), destination.toPath());
+        } finally {
+            //noinspection ResultOfMethodCallIgnored
+            temporary.delete();
+        }
+        if (entry.modified > 0) destination.setLastModified(entry.modified);
+    }
+
+    /** Writes into one file at a fixed offset, so ranged workers never move the cursor. */
+    private static final class RangedFileOutput extends OutputStream {
+        private final RandomAccessFile file;
+        private final long start;
+        private long sent;
+
+        RangedFileOutput(RandomAccessFile file, long start) {
+            this.file = file;
+            this.start = start;
+        }
+
+        @Override public void write(int b) throws IOException {
+            byte[] one = {(byte) b};
+            write(one, 0, 1);
+        }
+
+        @Override public void write(byte[] buffer, int offset, int length) throws IOException {
+            file.seek(start + sent);
+            file.write(buffer, offset, length);
+            sent += length;
+        }
     }
 
     public static void upload(RemoteClient destination, String parent, File source) throws IOException {
